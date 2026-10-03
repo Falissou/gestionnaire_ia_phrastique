@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f7f5">
+    <title>PharmaStock — Gestion de stock</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="#"><span class="brand-mark">+</span><span>Pharma<span class="brand-light">Stock</span></span></a>
+      <p class="nav-label">ESPACE PHARMACIE</p>
+      <nav>
+        <a class="nav-link active" href="#dashboard" data-view="dashboard"><span>◫</span> Tableau de bord</a>
+        <a class="nav-link" href="#stock" data-view="stock"><span>▦</span> Produits & stock</a>
+        <a class="nav-link" href="#mouvements" data-view="mouvements"><span>↕</span> Entrées & sorties</a>
+        <a class="nav-link" href="#commandes" data-view="commandes"><span>▤</span> Commandes</a>
+        <a class="nav-link" href="#veille" data-view="veille"><span>◉</span> Veille & alertes <span id="alert-count" class="nav-count">0</span></a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="connection"><span class="status-dot"></span><span>API connectée</span></div>
+        <button id="token-button" class="quiet-button">Connexion sécurisée</button>
+        <p class="copyright">Gestion intelligente<br>de votre pharmacie</p>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div><p class="eyebrow">GESTION DE PHARMACIE</p><h1 id="page-title">Tableau de bord</h1></div>
+        <div class="top-actions"><span id="today-label"></span><button class="avatar" title="Pharmacie">P</button></div>
+      </header>
+      <section id="dashboard-view" class="view">
+        <div class="welcome"><div><p class="eyebrow">VOTRE ACTIVITÉ EN UN COUP D'ŒIL</p><h2>Bonjour, bienvenue 👋</h2><p>Suivez vos stocks, vos commandes et les alertes importantes.</p></div><button class="button button-light" data-open-chat>✦ Parler à GestionAgent</button></div>
+        <div class="metrics">
+          <article class="metric"><span class="metric-icon green">▦</span><p>Références produits</p><strong id="metric-products">—</strong><small>produits dans le catalogue</small></article>
+          <article class="metric"><span class="metric-icon blue">◫</span><p>Unités en stock</p><strong id="metric-units">—</strong><small>toutes références confondues</small></article>
+          <article class="metric"><span class="metric-icon orange">↗</span><p>Commandes à suivre</p><strong id="metric-orders">—</strong><small>en attente de traitement</small></article>
+          <article class="metric"><span class="metric-icon red">!</span><p>Alertes à traiter</p><strong id="metric-alerts">—</strong><small>stock ou date d'expiration</small></article>
+        </div>
+        <div class="dashboard-grid">
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">À SURVEILLER</p><h3>Alertes récentes</h3></div><a href="#veille" data-view="veille">Voir tout →</a></div><div id="dashboard-alerts" class="alert-list"></div></article>
+          <article class="panel assistant-panel"><div class="assistant-icon">✦</div><p class="eyebrow">VOTRE ASSISTANT IA</p><h3>Une question sur votre stock ?</h3><p>GestionAgent coordonne vos agents spécialisés et vous aide à prendre les bonnes décisions.</p><button class="button button-primary" data-open-chat>Discuter avec GestionAgent <span>→</span></button></article>
+          <article class="panel recent-panel"><div class="panel-heading"><div><p class="eyebrow">DERNIÈRE ACTIVITÉ</p><h3>Mouvements récents</h3></div><a href="#mouvements" data-view="mouvements">Historique →</a></div><div id="recent-movements"></div></article>
+        </div>
+      </section>
+      <section id="stock-view" class="view hidden">
+        <div class="section-heading"><div><p class="eyebrow">CATALOGUE</p><h2>Produits & stock</h2><p>Gérez vos références et surveillez les niveaux de stock.</p></div><button class="button button-primary" id="add-product">＋ Ajouter un produit</button></div>
+        <div class="panel table-panel"><div class="table-tools"><input id="product-search" placeholder="Rechercher un produit…"><span id="product-total"></span></div><div class="table-wrap"><table><thead><tr><th>PRODUIT</th><th>CATÉGORIE</th><th>QUANTITÉ</th><th>SEUIL</th><th>EXPIRATION</th><th>ÉTAT</th></tr></thead><tbody id="products-table"></tbody></table></div></div>
+      </section>
+      <section id="mouvements-view" class="view hidden">
+        <div class="section-heading"><div><p class="eyebrow">TRAÇABILITÉ</p><h2>Entrées & sorties</h2><p>Chaque mouvement ajuste automatiquement votre stock.</p></div><button class="button button-primary" id="add-movement">＋ Enregistrer un mouvement</button></div>
+        <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>DATE</th><th>PRODUIT</th><th>TYPE</th><th>QUANTITÉ</th><th>MOTIF</th><th>RÉFÉRENCE</th></tr></thead><tbody id="movements-table"></tbody></table></div></div>
+      </section>
+      <section id="commandes-view" class="view hidden">
+        <div class="section-heading"><div><p class="eyebrow">APPROVISIONNEMENT</p><h2>Commandes fournisseurs</h2><p>Suivez les demandes et réceptions de produits.</p></div><button class="button button-primary" id="add-command">＋ Nouvelle commande</button></div>
+        <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>PRODUIT</th><th>QUANTITÉ</th><th>FOURNISSEUR</th><th>DATE PRÉVUE</th><th>STATUT</th><th>ACTION</th></tr></thead><tbody id="commands-table"></tbody></table></div></div>
+      </section>
+      <section id="veille-view" class="view hidden">
+        <div class="section-heading"><div><p class="eyebrow">SURVEILLANCE AUTOMATISÉE</p><h2>Veille & alertes</h2><p>Les seuils de stock et dates d'expiration sont vérifiés à chaque actualisation.</p></div><button class="button button-primary" id="send-alert-email">✉ Envoyer les alertes</button></div>
+        <div id="all-alerts" class="alert-cards"></div>
+      </section>
+    </main>
+    <dialog id="form-dialog"><form id="data-form" method="dialog"><div class="dialog-heading"><h2 id="dialog-title"></h2><button class="icon-button" value="cancel" aria-label="Fermer">×</button></div><div id="form-fields"></div><div class="form-actions"><button class="button button-secondary" value="cancel">Annuler</button><button class="button button-primary" id="form-submit" value="default">Enregistrer</button></div></form></dialog>
+    <dialog id="chat-dialog"><div class="dialog-heading"><div><p class="eyebrow">ASSISTANT ORCHESTRATEUR</p><h2>GestionAgent</h2></div><button class="icon-button" id="close-chat" aria-label="Fermer">×</button></div><label class="chat-agent-label" for="chat-agent">Agent à interroger</label><select id="chat-agent"></select><div id="chat-messages" class="chat-messages"><div class="chat-bubble assistant">Bonjour ! Je peux vous aider à analyser votre stock, vos commandes et les alertes produits.</div></div><form id="chat-form" class="chat-input"><input id="chat-message" placeholder="Posez votre question…" required><button class="button button-primary">Envoyer</button></form></dialog>
+    <div id="toast" class="toast" role="status"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
