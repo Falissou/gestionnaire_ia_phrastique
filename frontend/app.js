@@ -1,13 +1,18 @@
-const state = { products: [], commands: [], movements: [], alerts: [], agents: [] };
+const state = { products: [], commands: [], movements: [], alerts: [] };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[character]));
 let toastTimer;
+let commandImportFile = null;
+let commandImportPreviewId = null;
+let dataImportFile = null;
+let dataImportPreviewId = null;
+let referenceFiles = [];
 
 async function api(path, options = {}) {
   const token = localStorage.getItem("pharmastock-token");
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const headers = { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`/api${path}`, { ...options, headers });
   if (!response.ok) {
@@ -70,8 +75,8 @@ function renderProducts() {
   $("#product-total").textContent = `${filtered.length} produit(s)`;
   $("#products-table").innerHTML = filtered.length ? filtered.map((product) => {
     const [label, cls] = statusFor(product);
-    return `<tr><td><strong>${escapeHtml(product.name)}</strong></td><td>${escapeHtml(product.category)}</td><td><strong>${product.quantity}</strong></td><td>${product.min_quantity}</td><td>${dateText(product.expiry_date)}</td><td><span class="stock-tag ${cls}">${label}</span></td></tr>`;
-  }).join("") : '<tr><td colspan="6" class="empty-state">Aucun produit à afficher.</td></tr>';
+    return `<tr><td>${escapeHtml(product.product_code || "—")}</td><td><strong>${escapeHtml(product.name)}</strong></td><td>${escapeHtml(product.category)}</td><td><strong>${product.quantity}</strong></td><td>${product.min_quantity}</td><td>${dateText(product.expiry_date)}</td><td><span class="stock-tag ${cls}">${label}</span></td></tr>`;
+  }).join("") : '<tr><td colspan="7" class="empty-state">Aucun produit à afficher.</td></tr>';
 }
 
 function renderMovements() {
@@ -94,21 +99,18 @@ function renderAlerts() {
 }
 
 async function refresh() {
-  const [dashboard, products, commands, movements, alerts, agents] = await Promise.all([
-    api("/dashboard"), api("/products"), api("/commands"), api("/movements"), api("/alerts"), api("/agents"),
+  const [dashboard, products, commands, movements, alerts] = await Promise.all([
+    api("/dashboard"), api("/products"), api("/commands"), api("/movements"), api("/alerts"),
   ]);
   state.products = products;
   state.commands = commands;
   state.movements = movements;
   state.alerts = alerts;
-  state.agents = agents;
   renderDashboard(dashboard);
   renderProducts();
   renderCommands();
   renderMovements();
   renderAlerts();
-  $("#chat-agent").innerHTML = agents.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.name)}</option>`).join("");
-  $("#chat-agent").value = agents.at(-1)?.name || "";
 }
 
 const field = (name, label, type = "text", options = {}) => {
@@ -140,13 +142,14 @@ function openForm(title, fields, submit) {
 }
 
 $("#add-product").addEventListener("click", () => openForm("Ajouter un produit", [
+  field("product_code", "Code produit", "text", { required: false }),
   field("name", "Nom du produit", "text", { full: true }),
   field("category", "Catégorie", "text", { value: "Médicament" }),
   field("quantity", "Quantité", "number", { min: 0 }),
   field("min_quantity", "Seuil minimum", "number", { min: 0, value: "5" }),
   field("unit_price", "Prix unitaire (€)", "number", { min: 0, step: "0.01", value: "0" }),
   field("expiry_date", "Date d'expiration", "date", { required: false }),
-], (data) => api("/products", { method: "POST", body: JSON.stringify({ ...data, quantity: Number(data.quantity), min_quantity: Number(data.min_quantity), unit_price: Number(data.unit_price), expiry_date: data.expiry_date || null }) })));
+], (data) => api("/products", { method: "POST", body: JSON.stringify({ ...data, product_code: data.product_code || null, quantity: Number(data.quantity), min_quantity: Number(data.min_quantity), unit_price: Number(data.unit_price), expiry_date: data.expiry_date || null }) })));
 
 $("#add-command").addEventListener("click", () => openForm("Nouvelle commande", [
   field("product_name", "Produit", "text", { full: true }),
@@ -154,6 +157,173 @@ $("#add-command").addEventListener("click", () => openForm("Nouvelle commande", 
   field("supplier", "Fournisseur", "text"),
   field("expected_date", "Date de livraison prévue", "date", { required: false }),
 ], (data) => api("/commands", { method: "POST", body: JSON.stringify({ ...data, quantity: Number(data.quantity), expected_date: data.expected_date || null }) })));
+
+$("#import-commands").addEventListener("click", () => {
+  commandImportFile = null;
+  commandImportPreviewId = null;
+  $("#command-file").value = "";
+  $("#import-preview").innerHTML = "";
+  $("#confirm-command-import").disabled = true;
+  $("#import-dialog").showModal();
+});
+$("#command-file").addEventListener("change", () => {
+  commandImportFile = $("#command-file").files[0] || null;
+  commandImportPreviewId = null;
+  $("#import-preview").innerHTML = "";
+  $("#confirm-command-import").disabled = true;
+});
+$("#preview-command-import").addEventListener("click", async () => {
+  commandImportPreviewId = null;
+  if (!commandImportFile) {
+    notify("Sélectionnez un fichier CSV ou Excel.");
+    return;
+  }
+  const form = new FormData();
+  form.append("file", commandImportFile);
+  try {
+    const preview = await api("/commands/import/preview", { method: "POST", body: form });
+    commandImportPreviewId = preview.preview_id;
+    const rows = preview.rows.map((row) => {
+      const status = row.status === "ready" ? "Prête" : row.status === "duplicate" ? "Doublon ignoré" : "À corriger";
+      return `<tr><td>${row.row}</td><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(row.supplier)}</td><td>${escapeHtml(row.expected_date || "—")}</td><td><span class="import-status ${row.status}">${status}</span>${row.error ? `<small>${escapeHtml(row.error)}</small>` : ""}</td></tr>`;
+    }).join("");
+    $("#import-preview").innerHTML = `<p class="import-summary">${preview.ready_count} commande(s) prête(s), ${preview.duplicate_count} doublon(s), ${preview.invalid_count} ligne(s) à corriger.</p><div class="table-wrap"><table><thead><tr><th>LIGNE</th><th>PRODUIT</th><th>QUANTITÉ</th><th>FOURNISSEUR</th><th>LIVRAISON</th><th>ÉTAT</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    $("#confirm-command-import").disabled = preview.invalid_count > 0 || preview.ready_count === 0;
+  } catch (error) {
+    $("#import-preview").innerHTML = `<p class="import-error">${escapeHtml(error.message)}</p>`;
+    $("#confirm-command-import").disabled = true;
+  }
+});
+$("#confirm-command-import").addEventListener("click", async () => {
+  if (!commandImportPreviewId) return;
+  const form = new FormData();
+  form.append("preview_id", commandImportPreviewId);
+  try {
+    const result = await api("/commands/import", { method: "POST", body: form });
+    commandImportPreviewId = null;
+    $("#import-dialog").close();
+    await refresh();
+    notify(`${result.created_count} commande(s) ajoutée(s), ${result.duplicate_count} doublon(s) ignoré(s).`);
+  } catch (error) {
+    notify(error.message);
+    commandImportPreviewId = null;
+    $("#confirm-command-import").disabled = true;
+  }
+});
+$("#close-import").addEventListener("click", () => $("#import-dialog").close());
+
+function updateReferenceOptions() {
+  dataImportPreviewId = null;
+  $("#data-import-preview").innerHTML = "";
+  $("#confirm-data-import").disabled = true;
+  const target = $("#migration-target").value;
+  const select = $("#reference-file");
+  const current = select.value;
+  select.innerHTML = '<option value="">Choisir un fichier local à téléverser…</option>' +
+    referenceFiles.filter((item) => item.target === target).map((item) =>
+      `<option value="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</option>`).join("");
+  if (referenceFiles.some((item) => item.target === target && item.filename === current)) {
+    select.value = current;
+  }
+  const movements = target === "entree" || target === "sortie";
+  $("#adjust-import-stock").disabled = !movements;
+  $("#adjust-import-stock").checked = false;
+}
+
+function migrationFormData() {
+  const form = new FormData();
+  form.append("target", $("#migration-target").value);
+  form.append("adjust_stock", String($("#adjust-import-stock").checked));
+  if (dataImportFile) form.append("file", dataImportFile);
+  else if ($("#reference-file").value) form.append("reference_file", $("#reference-file").value);
+  return form;
+}
+
+function renderImportPreview(preview) {
+  const rows = preview.rows;
+  const keys = [...new Set(rows.flatMap((row) => Object.keys(row)
+    .filter((key) => !["source_row", "status", "error"].includes(key))))];
+  const header = ["LIGNE", ...keys.map((key) => key.replaceAll("_", " ").toUpperCase()), "ÉTAT"];
+  const body = rows.map((row) => {
+    const status = row.status === "ready" ? "Prête" : row.status === "duplicate" ? "Doublon ignoré" : "À corriger";
+    return `<tr><td>${escapeHtml(row.source_row)}</td>${keys.map((key) =>
+      `<td>${escapeHtml(row[key] ?? "—")}</td>`).join("")}<td><span class="import-status ${row.status}">${status}</span>${row.error ? `<small>${escapeHtml(row.error)}</small>` : ""}</td></tr>`;
+  }).join("");
+  $("#data-import-preview").innerHTML =
+    `<p class="import-summary">${preview.ready_count} ligne(s) prête(s), ${preview.duplicate_count} doublon(s), ${preview.invalid_count} ligne(s) à corriger.</p><div class="table-wrap"><table><thead><tr>${header.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
+  $("#confirm-data-import").disabled = preview.invalid_count > 0 || preview.ready_count === 0;
+}
+
+$("#open-data-import").addEventListener("click", async () => {
+  $("#data-import-preview").innerHTML = "";
+  $("#confirm-data-import").disabled = true;
+  $("#migration-file").value = "";
+  dataImportFile = null;
+  dataImportPreviewId = null;
+  $("#migration-target").value = "product";
+  $("#adjust-import-stock").checked = false;
+  try {
+    referenceFiles = await api("/import/references");
+    updateReferenceOptions();
+    $("#data-import-dialog").showModal();
+  } catch (error) { notify(error.message); }
+});
+$("#migration-target").addEventListener("change", updateReferenceOptions);
+$("#migration-file").addEventListener("change", () => {
+  dataImportFile = $("#migration-file").files[0] || null;
+  dataImportPreviewId = null;
+  if (dataImportFile) $("#reference-file").value = "";
+  $("#data-import-preview").innerHTML = "";
+  $("#confirm-data-import").disabled = true;
+});
+$("#reference-file").addEventListener("change", () => {
+  dataImportPreviewId = null;
+  if ($("#reference-file").value) {
+    $("#migration-file").value = "";
+    dataImportFile = null;
+  }
+  $("#data-import-preview").innerHTML = "";
+  $("#confirm-data-import").disabled = true;
+});
+$("#adjust-import-stock").addEventListener("change", () => {
+  dataImportPreviewId = null;
+  $("#data-import-preview").innerHTML = "";
+  $("#confirm-data-import").disabled = true;
+});
+$("#preview-data-import").addEventListener("click", async () => {
+  dataImportPreviewId = null;
+  if (!dataImportFile && !$("#reference-file").value) {
+    notify("Choisissez un classeur de référence ou un fichier à téléverser.");
+    return;
+  }
+  try {
+    const preview = await api("/import/preview", { method: "POST", body: migrationFormData() });
+    dataImportPreviewId = preview.preview_id;
+    renderImportPreview(preview);
+  } catch (error) {
+    $("#data-import-preview").innerHTML = `<p class="import-error">${escapeHtml(error.message)}</p>`;
+    $("#confirm-data-import").disabled = true;
+  }
+});
+$("#confirm-data-import").addEventListener("click", async () => {
+  if (!dataImportPreviewId) return;
+  const button = $("#confirm-data-import");
+  button.disabled = true;
+  try {
+    const form = new FormData();
+    form.append("preview_id", dataImportPreviewId);
+    const result = await api("/import/confirm", { method: "POST", body: form });
+    dataImportPreviewId = null;
+    $("#data-import-dialog").close();
+    await refresh();
+    notify(`${result.created_count} ligne(s) ajoutée(s), ${result.duplicate_count} doublon(s) ignoré(s).`);
+  } catch (error) {
+    notify(error.message);
+    dataImportPreviewId = null;
+    button.disabled = true;
+  }
+});
+$("#close-data-import").addEventListener("click", () => $("#data-import-dialog").close());
 
 $("#add-movement").addEventListener("click", () => openForm("Enregistrer un mouvement", [
   field("product_id", "Produit", "text", { choices: state.products.map((item) => [item.id, `${item.name} (${item.quantity} en stock)`]), full: true }),
@@ -178,11 +348,52 @@ document.querySelectorAll("[data-view]").forEach((link) => link.addEventListener
   document.querySelectorAll(".view").forEach((section) => section.classList.add("hidden"));
   $(`#${view}-view`).classList.remove("hidden");
   document.querySelectorAll(".nav-link").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
-  $("#page-title").textContent = { dashboard: "Tableau de bord", stock: "Produits & stock", mouvements: "Entrées & sorties", commandes: "Commandes fournisseurs", veille: "Veille & alertes" }[view];
+  $("#page-title").textContent = { dashboard: "Tableau de bord", stock: "Produits & stock", mouvements: "Entrées & sorties", commandes: "Commandes fournisseurs", imports: "Import & migration", veille: "Veille & alertes" }[view];
 }));
 
 document.querySelectorAll("[data-open-chat]").forEach((button) => button.addEventListener("click", () => $("#chat-dialog").showModal()));
 $("#close-chat").addEventListener("click", () => $("#chat-dialog").close());
+
+function showAgentProposal(proposal, box) {
+  const labels = { product: "Produit", command: "Commande fournisseur", movement: "Mouvement de stock" };
+  const endpoints = { product: "/products", command: "/commands", movement: "/movements" };
+  const card = document.createElement("section");
+  card.className = "agent-proposal";
+  if (!endpoints[proposal.type]) {
+    card.textContent = "Type de proposition inconnu; aucune action n’est disponible.";
+    box.append(card);
+    return;
+  }
+  const title = document.createElement("strong");
+  title.textContent = `Proposition — ${labels[proposal.type] || "action inconnue"}`;
+  const details = document.createElement("pre");
+  details.textContent = JSON.stringify(proposal.data, null, 2);
+  const confirm = document.createElement("button");
+  confirm.className = "button button-secondary";
+  confirm.type = "button";
+  confirm.textContent = "Confirmer l’ajout";
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true;
+    try {
+      await api(endpoints[proposal.type], {
+        method: "POST",
+        body: JSON.stringify(proposal.data),
+      });
+      confirm.textContent = "Ajout confirmé";
+    } catch (error) {
+      confirm.disabled = false;
+      const failure = document.createElement("p");
+      failure.className = "proposal-error";
+      failure.textContent = error.message;
+      card.append(failure);
+      return;
+    }
+    refresh().catch((error) => notify(`Ajout effectué, mais actualisation impossible : ${error.message}`));
+  });
+  card.append(title, details, confirm);
+  box.append(card);
+}
+
 $("#chat-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("#chat-message");
@@ -197,8 +408,15 @@ $("#chat-form").addEventListener("submit", async (event) => {
   box.append(waiting);
   box.scrollTop = box.scrollHeight;
   try {
-    const answer = await api(`/agents/${encodeURIComponent($("#chat-agent").value)}/chat`, { method: "POST", body: JSON.stringify({ message }) });
+    const answer = await api("/chat", { method: "POST", body: JSON.stringify({ message }) });
     waiting.textContent = answer.reply;
+    const sources = document.createElement("small");
+    sources.className = "chat-sources";
+    sources.textContent = answer.sharepoint_configured
+      ? `Documents SharePoint consultés : ${answer.sharepoint_sources.join(", ")}`
+      : "SharePoint n’est pas configuré sur le serveur.";
+    box.append(sources);
+    (answer.proposals || []).forEach((proposal) => showAgentProposal(proposal, box));
   } catch (error) { waiting.textContent = error.message; }
   box.scrollTop = box.scrollHeight;
 });

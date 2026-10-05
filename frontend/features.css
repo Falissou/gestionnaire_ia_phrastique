@@ -1,0 +1,144 @@
+.button-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.migration-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px;
+}
+
+.migration-panel h3 {
+  margin: 6px 0;
+}
+
+.migration-panel p:not(.eyebrow) {
+  max-width: 720px;
+  color: #718078;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.migration-note {
+  margin-top: 14px;
+}
+
+.stock-adjust-option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 14px;
+  color: #65726a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.stock-adjust-option input {
+  margin-top: 2px;
+}
+
+dialog.wide-dialog {
+  width: min(860px, calc(100% - 30px));
+}
+
+.import-help,
+.chat-intro {
+  color: #718078;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.file-label {
+  display: block;
+  margin: 14px 0 7px;
+  color: #65726a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+#command-file {
+  width: 100%;
+}
+
+.import-preview {
+  margin-top: 16px;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.import-preview small {
+  display: block;
+  max-width: 260px;
+  margin-top: 4px;
+  color: #a45422;
+  white-space: normal;
+}
+
+.import-summary {
+  color: #53635a;
+  font-size: 12px;
+}
+
+.import-status {
+  display: inline-block;
+  padding: 4px 7px;
+  border-radius: 12px;
+  font-size: 10px;
+}
+
+.import-status.ready {
+  background: #eaf5ed;
+  color: #287850;
+}
+
+.import-status.duplicate {
+  background: #eef1ef;
+  color: #68746d;
+}
+
+.import-status.invalid,
+.import-error {
+  background: #fff0e9;
+  color: #b45e36;
+}
+
+.import-error {
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.chat-sources {
+  display: block;
+  margin: 4px 0 10px;
+  color: #718078;
+  font-size: 11px;
+}
+
+.agent-proposal {
+  margin: 8px 0 12px;
+  padding: 12px;
+  border: 1px solid #dce8df;
+  border-radius: 8px;
+  background: #f8fbf8;
+}
+
+.agent-proposal pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #53635a;
+  font-size: 11px;
+}
+
+.agent-proposal button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.proposal-error {
+  color: #b45e36;
+  font-size: 12px;
+}

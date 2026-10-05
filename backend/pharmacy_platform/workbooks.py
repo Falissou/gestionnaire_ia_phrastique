@@ -8,6 +8,24 @@ from uuid import uuid4
 from openpyxl import Workbook, load_workbook
 
 
+def command_signature(command: dict) -> tuple[str, int, str, str | None]:
+    expected_date = command.get("expected_date")
+    if isinstance(expected_date, datetime):
+        expected_date = expected_date.date()
+    if isinstance(expected_date, date):
+        expected_date = expected_date.isoformat()
+    elif expected_date:
+        expected_date = str(expected_date)[:10]
+    else:
+        expected_date = None
+    return (
+        str(command.get("product_name") or "").strip().casefold(),
+        int(command.get("quantity") or 0),
+        str(command.get("supplier") or "").strip().casefold(),
+        expected_date,
+    )
+
+
 class WorkbookStore:
     STOCK_SHEETS = {
         "Stock": [
@@ -118,6 +136,12 @@ class WorkbookStore:
     def add_command(self, data: dict) -> dict:
         with self.lock:
             rows = self._read(self.stock_path, "Commandes")
+            signature = command_signature(data)
+            if any(
+                command_signature(row) == signature and row.get("status") != "Annulée"
+                for row in rows
+            ):
+                raise ValueError("Une commande identique existe déjà.")
             row = {
                 "id": str(uuid4()),
                 "status": "En attente",
@@ -127,6 +151,34 @@ class WorkbookStore:
             rows.append(row)
             self._write_rows(self.stock_path, "Commandes", rows, self.STOCK_SHEETS)
             return row
+
+    def import_commands(self, commands: list[tuple[int, dict]]) -> tuple[list[dict], list[int]]:
+        with self.lock:
+            rows = self._read(self.stock_path, "Commandes")
+            signatures = {
+                command_signature(row)
+                for row in rows
+                if row.get("status") != "Annulée"
+            }
+            created = []
+            duplicates = []
+            for source_row, data in commands:
+                signature = command_signature(data)
+                if signature in signatures:
+                    duplicates.append(source_row)
+                    continue
+                signatures.add(signature)
+                command = {
+                    "id": str(uuid4()),
+                    "status": "En attente",
+                    "order_date": date.today().isoformat(),
+                    **data,
+                }
+                rows.append(command)
+                created.append(command)
+            if created:
+                self._write_rows(self.stock_path, "Commandes", rows, self.STOCK_SHEETS)
+            return created, duplicates
 
     def add_movement(self, data: dict) -> dict:
         kind = data["type"]
