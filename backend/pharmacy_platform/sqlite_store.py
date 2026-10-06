@@ -28,6 +28,10 @@ class SQLiteStore:
                     min_quantity INTEGER NOT NULL CHECK (min_quantity >= 0),
                     unit_price REAL NOT NULL CHECK (unit_price >= 0),
                     expiry_date TEXT,
+                    supplier TEXT,
+                    entry_date TEXT,
+                    source_status TEXT,
+                    comments TEXT,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS commands (
@@ -37,7 +41,13 @@ class SQLiteStore:
                     supplier TEXT NOT NULL,
                     status TEXT NOT NULL,
                     order_date TEXT NOT NULL,
-                    expected_date TEXT
+                    expected_date TEXT,
+                    source_order_number TEXT,
+                    product_code TEXT,
+                    unit_price REAL,
+                    total_amount REAL,
+                    responsible TEXT,
+                    comments TEXT
                 );
                 CREATE TABLE IF NOT EXISTS movements (
                     id TEXT PRIMARY KEY,
@@ -51,6 +61,29 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS movements_date_idx ON movements(date);
                 """
             )
+            optional_columns = {
+                "products": {
+                    "supplier": "TEXT",
+                    "entry_date": "TEXT",
+                    "source_status": "TEXT",
+                    "comments": "TEXT",
+                },
+                "commands": {
+                    "source_order_number": "TEXT",
+                    "product_code": "TEXT",
+                    "unit_price": "REAL",
+                    "total_amount": "REAL",
+                    "responsible": "TEXT",
+                    "comments": "TEXT",
+                },
+            }
+            for table, columns in optional_columns.items():
+                existing_columns = {
+                    row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
+                }
+                for name, column_type in columns.items():
+                    if name not in existing_columns:
+                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=15)
@@ -83,6 +116,20 @@ class SQLiteStore:
         with self.lock, self._connection() as connection:
             return [self._command(row) for row in connection.execute("SELECT * FROM commands ORDER BY order_date DESC")]
 
+    def validated_commands(self) -> list[dict]:
+        with self.lock, self._connection() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT commands.*,
+                        COALESCE(commands.product_code, products.product_code) AS export_product_code
+                    FROM commands
+                    LEFT JOIN products ON products.name = commands.product_name COLLATE NOCASE
+                    WHERE commands.status = 'Commandée'
+                    ORDER BY commands.order_date DESC, commands.product_name"""
+                )
+            ]
+
     def movements(self, kind: str | None = None) -> list[dict]:
         with self.lock, self._connection() as connection:
             sql = """
@@ -106,14 +153,20 @@ class SQLiteStore:
             "min_quantity": data.get("min_quantity", 5),
             "unit_price": data.get("unit_price", 0),
             "expiry_date": data.get("expiry_date"),
+            "supplier": data.get("supplier"),
+            "entry_date": data.get("entry_date"),
+            "source_status": data.get("source_status"),
+            "comments": data.get("comments"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             with self.lock, self._connection() as connection:
                 connection.execute(
                     """INSERT INTO products
-                    (id, product_code, name, category, quantity, min_quantity, unit_price, expiry_date, updated_at)
-                    VALUES (:id, :product_code, :name, :category, :quantity, :min_quantity, :unit_price, :expiry_date, :updated_at)""",
+                    (id, product_code, name, category, quantity, min_quantity, unit_price, expiry_date,
+                     supplier, entry_date, source_status, comments, updated_at)
+                    VALUES (:id, :product_code, :name, :category, :quantity, :min_quantity, :unit_price,
+                            :expiry_date, :supplier, :entry_date, :source_status, :comments, :updated_at)""",
                     row,
                 )
         except sqlite3.IntegrityError as exc:
@@ -135,21 +188,144 @@ class SQLiteStore:
                 "id": str(uuid4()),
                 "status": "En attente",
                 "order_date": date.today().isoformat(),
+                "source_order_number": data.get("source_order_number"),
+                "product_code": data.get("product_code"),
+                "unit_price": data.get("unit_price"),
+                "total_amount": data.get("total_amount"),
+                "responsible": data.get("responsible"),
+                "comments": data.get("comments"),
                 **data,
             }
             connection.execute(
-                """INSERT INTO commands (id, product_name, quantity, supplier, status, order_date, expected_date)
-                VALUES (:id, :product_name, :quantity, :supplier, :status, :order_date, :expected_date)""",
+                """INSERT INTO commands
+                (id, product_name, quantity, supplier, status, order_date, expected_date,
+                 source_order_number, product_code, unit_price, total_amount, responsible, comments)
+                VALUES (:id, :product_name, :quantity, :supplier, :status, :order_date, :expected_date,
+                        :source_order_number, :product_code, :unit_price, :total_amount, :responsible, :comments)""",
                 row,
             )
             return row
 
+    def place_purchase_order(
+        self,
+        order_number: str,
+        supplier: str,
+        expected_date: str | None,
+        responsible: str | None,
+        comments: str | None,
+        lines: list[dict],
+    ) -> list[dict]:
+        created = []
+        order_date = date.today().isoformat()
+        with self.lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for line in lines:
+                product = connection.execute(
+                    "SELECT * FROM products WHERE id = ?", (line["product_id"],)
+                ).fetchone()
+                if product is None:
+                    raise LookupError("Un des produits sélectionnés n'existe plus.")
+                if product["quantity"] > product["min_quantity"]:
+                    raise ValueError(
+                        f"{product['name']} n'est plus sous son seuil de réapprovisionnement."
+                    )
+                active_command = connection.execute(
+                    """SELECT 1 FROM commands
+                    WHERE product_name = ? COLLATE NOCASE
+                      AND status NOT IN ('Reçue', 'Annulée')
+                    LIMIT 1""",
+                    (product["name"],),
+                ).fetchone()
+                if active_command:
+                    raise ValueError(
+                        f"Une commande active existe déjà pour {product['name']}."
+                    )
+                quantity = line["quantity"]
+                unit_price = line["unit_price"]
+                row = {
+                    "id": str(uuid4()),
+                    "product_name": product["name"],
+                    "product_code": product["product_code"],
+                    "quantity": quantity,
+                    "supplier": supplier,
+                    "status": "Commandée",
+                    "order_date": order_date,
+                    "expected_date": expected_date,
+                    "source_order_number": order_number,
+                    "unit_price": unit_price,
+                    "total_amount": round(quantity * unit_price, 2),
+                    "responsible": responsible,
+                    "comments": comments,
+                }
+                connection.execute(
+                    """INSERT INTO commands
+                    (id, product_name, quantity, supplier, status, order_date, expected_date,
+                     source_order_number, product_code, unit_price, total_amount, responsible, comments)
+                    VALUES (:id, :product_name, :quantity, :supplier, :status, :order_date,
+                            :expected_date, :source_order_number, :product_code, :unit_price,
+                            :total_amount, :responsible, :comments)""",
+                    row,
+                )
+                created.append(row)
+        return created
+
     def add_movement(self, data: dict) -> dict:
         with self.lock, self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            product = connection.execute(
-                "SELECT * FROM products WHERE id = ?", (data["product_id"],)
-            ).fetchone()
+            product_id = data.get("product_id")
+            if product_id:
+                product = connection.execute(
+                    "SELECT * FROM products WHERE id = ?", (product_id,)
+                ).fetchone()
+            elif data["type"] == "entree":
+                product = None
+                product_code = (data.get("product_code") or "").strip()
+                product_name = (data.get("product_name") or "").strip()
+                if product_code or product_name:
+                    matches = connection.execute(
+                        """SELECT * FROM products
+                        WHERE (? != '' AND product_code = ? COLLATE NOCASE)
+                           OR (? != '' AND name = ? COLLATE NOCASE)""",
+                        (product_code, product_code, product_name, product_name),
+                    ).fetchall()
+                    if len(matches) > 1:
+                        raise ValueError("Le code et le nom désignent des produits différents.")
+                    product = matches[0] if matches else None
+                if product is None:
+                    if not product_name:
+                        raise ValueError("Le nom du nouveau produit est obligatoire.")
+                    product = {
+                        "id": str(uuid4()),
+                        "product_code": product_code or None,
+                        "name": product_name,
+                        "category": data.get("category") or "Médicament",
+                        "quantity": 0,
+                        "min_quantity": data.get("min_quantity", 5),
+                        "unit_price": data.get("unit_price", 0),
+                        "expiry_date": data.get("expiry_date"),
+                        "supplier": data.get("supplier"),
+                        "entry_date": data.get("entry_date"),
+                        "source_status": data.get("source_status"),
+                        "comments": data.get("comments"),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    try:
+                        connection.execute(
+                            """INSERT INTO products
+                            (id, product_code, name, category, quantity, min_quantity,
+                             unit_price, expiry_date, supplier, entry_date, source_status, comments,
+                             updated_at)
+                            VALUES (:id, :product_code, :name, :category, :quantity,
+                                    :min_quantity, :unit_price, :expiry_date, :supplier, :entry_date,
+                                    :source_status, :comments, :updated_at)""",
+                            product,
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise ValueError(
+                            "Un produit portant ce nom ou ce code existe déjà."
+                        ) from exc
+            else:
+                product = None
             if product is None:
                 raise LookupError("Produit introuvable.")
             quantity = data["quantity"]
@@ -158,7 +334,7 @@ class SQLiteStore:
             updated_quantity = product["quantity"] + (quantity if data["type"] == "entree" else -quantity)
             connection.execute(
                 "UPDATE products SET quantity = ?, updated_at = ? WHERE id = ?",
-                (updated_quantity, datetime.now(timezone.utc).isoformat(), data["product_id"]),
+                (updated_quantity, datetime.now(timezone.utc).isoformat(), product["id"]),
             )
             row = {
                 "id": str(uuid4()),
@@ -214,12 +390,18 @@ class SQLiteStore:
                         "min_quantity": data.get("min_quantity", 5),
                         "unit_price": data.get("unit_price", 0),
                         "expiry_date": data.get("expiry_date"),
+                        "supplier": data.get("supplier"),
+                        "entry_date": data.get("entry_date"),
+                        "source_status": data.get("source_status"),
+                        "comments": data.get("comments"),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
                     connection.execute(
                         """INSERT INTO products
-                        (id, product_code, name, category, quantity, min_quantity, unit_price, expiry_date, updated_at)
-                        VALUES (:id, :product_code, :name, :category, :quantity, :min_quantity, :unit_price, :expiry_date, :updated_at)""",
+                        (id, product_code, name, category, quantity, min_quantity, unit_price, expiry_date,
+                         supplier, entry_date, source_status, comments, updated_at)
+                        VALUES (:id, :product_code, :name, :category, :quantity, :min_quantity, :unit_price,
+                                :expiry_date, :supplier, :entry_date, :source_status, :comments, :updated_at)""",
                         row,
                     )
                 elif target == "command":
@@ -237,24 +419,71 @@ class SQLiteStore:
                         "id": str(uuid4()),
                         "status": data.get("status") or "En attente",
                         "order_date": data.get("order_date") or date.today().isoformat(),
+                        "source_order_number": data.get("source_order_number"),
+                        "product_code": data.get("product_code"),
+                        "unit_price": data.get("unit_price"),
+                        "total_amount": data.get("total_amount"),
+                        "responsible": data.get("responsible"),
+                        "comments": data.get("comments"),
                         **data,
                     }
                     connection.execute(
                         """INSERT INTO commands
-                        (id, product_name, quantity, supplier, status, order_date, expected_date)
-                        VALUES (:id, :product_name, :quantity, :supplier, :status, :order_date, :expected_date)""",
+                        (id, product_name, quantity, supplier, status, order_date, expected_date,
+                         source_order_number, product_code, unit_price, total_amount, responsible, comments)
+                        VALUES (:id, :product_name, :quantity, :supplier, :status, :order_date, :expected_date,
+                                :source_order_number, :product_code, :unit_price, :total_amount, :responsible, :comments)""",
                         row,
                     )
                 else:
-                    if data.get("product_code"):
+                    product_code = (data.get("product_code") or "").strip()
+                    product_name = (data.get("product_name") or "").strip()
+                    matches = connection.execute(
+                        """SELECT * FROM products
+                        WHERE (? != '' AND product_code = ? COLLATE NOCASE)
+                           OR (? != '' AND name = ? COLLATE NOCASE)""",
+                        (product_code, product_code, product_name, product_name),
+                    ).fetchall()
+                    if len(matches) > 1:
+                        raise ValueError(
+                            f"Le code et le nom désignent des produits différents "
+                            f"à la ligne {data.get('source_row', '?')}."
+                        )
+                    product = matches[0] if matches else None
+                    if product is None and target == "entree" and adjust_stock and product_name:
+                        new_product = {
+                            "id": str(uuid4()),
+                            "product_code": product_code or None,
+                            "name": product_name,
+                            "category": data.get("category") or "Médicament",
+                            "quantity": 0,
+                            "min_quantity": data.get("min_quantity", 5),
+                            "unit_price": data.get("unit_price", 0),
+                            "expiry_date": data.get("expiry_date"),
+                            "supplier": data.get("supplier"),
+                            "entry_date": data.get("entry_date"),
+                            "source_status": data.get("source_status"),
+                            "comments": data.get("comments"),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        try:
+                            connection.execute(
+                                """INSERT INTO products
+                                (id, product_code, name, category, quantity, min_quantity,
+                                 unit_price, expiry_date, supplier, entry_date, source_status, comments,
+                                 updated_at)
+                                VALUES (:id, :product_code, :name, :category, :quantity,
+                                        :min_quantity, :unit_price, :expiry_date, :supplier, :entry_date,
+                                        :source_status, :comments, :updated_at)""",
+                                new_product,
+                            )
+                        except sqlite3.IntegrityError as exc:
+                            raise ValueError(
+                                f"Un produit portant ce nom ou ce code existe déjà à la ligne "
+                                f"{data.get('source_row', '?')}."
+                            ) from exc
                         product = connection.execute(
-                            "SELECT * FROM products WHERE product_code = ? COLLATE NOCASE",
-                            (data["product_code"],),
-                        ).fetchone()
-                    else:
-                        product = connection.execute(
-                            "SELECT * FROM products WHERE name = ? COLLATE NOCASE",
-                            (data.get("product_name"),),
+                            "SELECT * FROM products WHERE id = ?", (new_product["id"],)
                         ).fetchone()
                     if product is None:
                         raise LookupError(

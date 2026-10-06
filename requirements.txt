@@ -4,6 +4,6 @@ python-multipart>=0.0.9,<1
 openpyxl>=3.1,<4
 python-dotenv>=1.0,<2
 PyJWT[crypto]>=2.9,<3
-azure-ai-projects>=1.0.0b1
+azure-ai-projects[voice]>=2.7.0
 azure-identity>=1.17
 pypdf>=5,<7

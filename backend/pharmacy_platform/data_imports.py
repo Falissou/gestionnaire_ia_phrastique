@@ -18,26 +18,36 @@ MAX_IMPORT_ROWS = 5000
 
 ALIASES = {
     "product_code": {"code", "codeproduit", "productcode", "codemedicament"},
-    "name": {"nom", "name", "nomproduit", "nommedicament", "produit", "article"},
+    "name": {
+        "nom", "name", "nomproduit", "nommedicament", "nomduproduit",
+        "product", "productname", "produit", "article",
+    },
     "category": {"categorie", "category"},
     "quantity": {
         "quantite", "qte", "qty", "quantity", "quantitestock",
         "quantitecommandee", "quantiterecue", "quantitesortie", "quantiteconcernee",
+        "quantiteaajouter",
     },
     "min_quantity": {"seuil", "seuilalerte", "seuilminimum", "minquantity"},
     "unit_price": {
         "prixunitaire", "prixachatunitaire", "unitprice", "prixunitairefcfa",
         "prixachatunitairefcfa",
     },
+    "total_amount": {"montanttotal", "montanttotalfcfa", "totalamount"},
     "expiry_date": {"dateexpiration", "dateperemption", "expirydate"},
     "supplier": {"fournisseur", "supplier", "vendor"},
     "status": {"statut", "statutcommande", "status"},
+    "source_status": {"statutstock"},
+    "source_order_number": {"ncommande", "numerocommande", "ordernumber"},
+    "responsible": {"responsable", "responsible"},
+    "comments": {"commentaire", "commentaires", "comment", "comments", "notes"},
+    "entry_date": {"dateentree", "entrydate"},
     "order_date": {"datecommande", "orderdate"},
     "expected_date": {
         "dateprevue", "dateprevuedelivraison", "datedelivraisonprevue",
         "datelivraisonprevue", "expecteddate", "deliverydate",
     },
-    "date": {"date", "dateentree", "datesortie"},
+    "date": {"date", "dateentree", "dateentreeprevue", "datesortie"},
     "reason": {"motif", "raison", "reason"},
     "reference": {
         "reference", "numerobonlivraison", "nbonlivraison",
@@ -178,10 +188,14 @@ def parse_import_rows(target: str, rows: list[tuple[int, list[object]]]) -> list
                     "product_code": str(raw.get("product_code") or "").strip() or None,
                     "name": name,
                     "category": str(raw.get("category") or "").strip() or "Médicament",
+                    "supplier": str(raw.get("supplier") or "").strip() or None,
                     "quantity": quantity,
                     "min_quantity": _number(raw.get("min_quantity"), integer=True, allow_empty=True),
                     "unit_price": _number(raw.get("unit_price"), allow_empty=True),
                     "expiry_date": _parse_date(raw.get("expiry_date")),
+                    "entry_date": _parse_date(raw.get("entry_date")),
+                    "source_status": str(raw.get("source_status") or "").strip() or None,
+                    "comments": str(raw.get("comments") or "").strip() or None,
                 }
                 record["min_quantity"] = record["min_quantity"] if record["min_quantity"] is not None else 5
                 record["unit_price"] = record["unit_price"] if record["unit_price"] is not None else 0
@@ -200,10 +214,16 @@ def parse_import_rows(target: str, rows: list[tuple[int, list[object]]]) -> list
                     "livrée": "Reçue",
                 }
                 record = {
+                    "source_order_number": str(raw.get("source_order_number") or "").strip() or None,
                     "product_name": str(raw.get("name") or "").strip(),
+                    "product_code": str(raw.get("product_code") or "").strip() or None,
                     "quantity": quantity,
                     "supplier": str(raw.get("supplier") or "").strip(),
-                    "status": status_map.get(status, "En attente"),
+                    "unit_price": _number(raw.get("unit_price"), allow_empty=True),
+                    "total_amount": _number(raw.get("total_amount"), allow_empty=True),
+                    "responsible": str(raw.get("responsible") or "").strip() or None,
+                    "comments": str(raw.get("comments") or "").strip() or None,
+                    "command_status": status_map.get(status, "En attente"),
                     "order_date": _parse_date(raw.get("order_date")) or date.today().isoformat(),
                     "expected_date": _parse_date(raw.get("expected_date")),
                 }

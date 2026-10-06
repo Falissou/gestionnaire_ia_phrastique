@@ -4,6 +4,134 @@
   flex-wrap: wrap;
 }
 
+.movement-registers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.movement-registers .panel-heading,
+.suggested-orders-panel .panel-heading {
+  padding: 18px 20px 0;
+}
+
+.suggested-orders-panel {
+  margin-bottom: 16px;
+}
+
+.suggested-orders-panel .panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.validate-command {
+  margin: 4px;
+  white-space: nowrap;
+}
+
+.suggested-order-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+}
+
+.suggestion-select {
+  width: 18px;
+  height: 18px;
+  accent-color: #147d58;
+}
+
+.purchase-order-dialog {
+  width: min(1100px, calc(100% - 30px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+
+.purchase-order-fields {
+  margin: 16px 0;
+}
+
+.purchase-order-dialog .po-quantity,
+.purchase-order-dialog .po-unit-price {
+  width: 120px;
+  min-width: 90px;
+}
+
+.purchase-order-total {
+  text-align: right;
+  color: #53635a;
+}
+
+.purchase-order-total strong {
+  color: #147d58;
+  font-size: 18px;
+}
+
+.purchase-order-dialog .import-error:empty {
+  display: none;
+}
+
+.chat-input {
+  flex-wrap: wrap;
+}
+
+.chat-input input {
+  flex: 1 1 240px;
+}
+
+.voice-status {
+  flex-basis: 100%;
+  color: #53635a;
+  font-size: 13px;
+}
+
+#record-voice[aria-pressed="true"] {
+  background: #a82b36;
+  color: #fff;
+}
+
+.chat-bubble audio {
+  display: block;
+  max-width: 100%;
+  margin-top: 10px;
+}
+
+.agent-reports {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #dce8df;
+  border-radius: 8px;
+  color: #53635a;
+  font-size: 12px;
+}
+
+.agent-reports summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.agent-reports section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e7eee9;
+}
+
+.agent-reports p {
+  white-space: pre-wrap;
+}
+
+.agent-reports a,
+.chat-sources a {
+  display: inline-block;
+  margin-right: 8px;
+  color: #287850;
+}
+
 .migration-panel {
   display: flex;
   align-items: center;
@@ -141,4 +269,10 @@ dialog.wide-dialog {
 .proposal-error {
   color: #b45e36;
   font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .movement-registers {
+    grid-template-columns: 1fr;
+  }
 }

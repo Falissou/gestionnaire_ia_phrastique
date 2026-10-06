@@ -14,12 +14,16 @@ Les correspondances reconnues sont :
 
 | Type | Classeur de référence | Données principales |
 |---|---|---|
-| Stock des produits | `Stock_Medicaments.xlsx` | Code, nom, catégorie, quantité, seuil, prix, expiration |
-| Commandes | `Commandes_Fournisseurs.xlsx` | Produit, quantité, fournisseur, statut, dates |
-| Entrées | `Entrees_Stock.xlsx` | Produit/code, date, quantité, fournisseur, bon de livraison |
-| Sorties | `Sorties_Stock.xlsx` | Produit/code, date, quantité, motif, client/service |
+| Stock des produits | `Stock_Medicaments.xlsx` | Code, nom, catégorie, quantité en stock, seuil, prix, expiration |
+| Commandes | `Commandes_type.xlsx` | N° commande, dates, fournisseur, code/nom produit, quantité, statut |
+| Entrées | `Entrée_type.xlsx` | Code/nom produit, quantité à ajouter, motif, date prévue |
+| Sorties | `Sortis_type.xlsx` | Code/nom produit, quantité sortie, date |
 
-Importez dans cet ordre : **stock**, **commandes**, **entrées**, **sorties**. Les entrées/sorties doivent retrouver un produit par code ou nom; importez donc le stock avant l'historique des mouvements. Les mouvements importés sont historisés sans changer le stock par défaut, afin d'éviter de compter deux fois des quantités déjà présentes dans le classeur de stock. Pour importer des mouvements nouveaux, cochez **Ajuster le stock** après avoir vérifié les lignes et les quantités.
+Les noms de colonnes sont normalisés (accents, espaces et ponctuation ignorés). L'import du stock conserve aussi le fournisseur, la date d'entrée, le statut source et les commentaires. L'import des commandes conserve le numéro de commande source, le code produit, le prix unitaire, le montant total, le responsable et les commentaires en plus des dates et du statut. Les statuts source `Validée` et `En cours de livraison` sont importés comme `Commandée`; `Reçue`/`Livrée` deviennent `Reçue`, et les statuts annulés restent `Annulée`. Pour les entrées, `Date Entrée Prévue` alimente la date du mouvement; le motif est également conservé. Une base SQLite existante reçoit automatiquement les nouvelles colonnes au démarrage, sans supprimer les données déjà enregistrées.
+
+Importez dans cet ordre : **stock**, **commandes**, **entrées**, **sorties**. Les entrées/sorties doivent retrouver un produit par code ou nom; importez donc le stock avant l'historique des mouvements. Les mouvements importés sont historisés sans changer le stock par défaut, afin d'éviter de compter deux fois des quantités déjà présentes dans le classeur de stock. Pour importer des mouvements nouveaux, cochez **Ajuster le stock** après avoir vérifié les lignes et les quantités. Une entrée nouvelle avec un nom de produit et cette option cochée crée aussi la référence absente et initialise son stock avec la quantité reçue.
+
+Dans **Entrées & sorties**, les deux registres sont séparés. Une entrée manuelle peut sélectionner un produit existant ou créer une nouvelle référence; dans les deux cas, la quantité entrée est ajoutée au stock dans la même transaction. Une sortie ne peut porter que sur un produit existant et est refusée si le stock est insuffisant.
 
 L'aperçu valide les nombres et dates, indique les lignes invalides, reconnaît les doublons et interdit la confirmation si des erreurs restent présentes. La confirmation utilise un aperçu temporaire à usage unique, valable 15 minutes; aucun fichier source n'est conservé dans la base. L'import des lignes prêtes est transactionnel : une erreur empêche l'enregistrement partiel.
 
@@ -36,10 +40,11 @@ Depuis **Commandes fournisseurs**, l'ancien raccourci d'import accepte `.csv` et
 | `GET` | `/api/health` | Vérification de disponibilité |
 | `GET` / `POST` | `/api/products` | Lire / créer des produits |
 | `GET` / `POST` | `/api/commands` | Lire / créer des commandes |
+| `GET` | `/api/commands/export/validated` | Télécharger les commandes au statut `Commandée` au format Excel |
 | `POST` | `/api/commands/import/preview` | Prévisualiser un import de commandes |
 | `POST` | `/api/commands/import` | Importer les commandes après validation |
 | `PATCH` | `/api/commands/{id}` | Mettre à jour l'état d'une commande |
-| `GET` / `POST` | `/api/movements` | Lire / enregistrer un mouvement |
+| `GET` / `POST` | `/api/movements` | Lire / enregistrer un mouvement (`GET` accepte `?kind=entree` ou `?kind=sortie`) |
 | `GET` | `/api/import/references` | Lister les classeurs de référence disponibles dans `data/` |
 | `POST` | `/api/import/preview` | Prévisualiser une migration ou un import |
 | `POST` | `/api/import/confirm` | Confirmer un aperçu temporaire et enregistrer les lignes prêtes |
@@ -50,5 +55,13 @@ Depuis **Commandes fournisseurs**, l'ancien raccourci d'import accepte `.csv` et
 | `POST` | `/api/chat` | Interroger GestionAgent |
 
 Les agents lisent les données de SQLite et peuvent proposer des ajouts, mais la confirmation de l'utilisateur reste nécessaire avant écriture. Le stockage de factures, leur lecture assistée par agent et la gestion des lots ne sont pas encore implémentés.
+
+GestionAgent peut envoyer par SMTP un état de stock lorsque l'utilisateur le demande explicitement. Définissez `SMTP_RECIPIENTS` dans `.env` (adresses séparées par `,` ou `;`) avec `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` et, si requis, `SMTP_USER` / `SMTP_PASSWORD`. Les destinataires sont fixes côté serveur et ne peuvent pas être choisis par l'agent.
+
+Le chat dispose également d'un bouton de message vocal connecté à la session temps réel Voice de Foundry. Celui-ci nécessite un agent GestionAgent créé et publié avec le mode d'interaction Voice, `FOUNDRY_VOICE_AGENT_NAME` (par défaut `GestionAgent`), le paquet `azure-ai-projects[voice]`, et un site HTTPS/localhost avec accès au microphone. Les messages vocaux sont limités à 60 secondes et envoyés en WAV PCM mono 16 bits à 24 kHz; l'application effectue la conversion dans le navigateur. Les outils locaux continuent à être exécutés par le backend.
+
+`GET /api/recommendations` inclut `orders`, une liste de produits sous leur seuil (hors commandes déjà actives) et une quantité suggérée pour remonter au seuil. Le navigateur met en cache les suggestions pendant cinq heures et les recharge au plus à cette fréquence, y compris après une visite interrompue. Les données opérationnelles restent actualisées toutes les 60 secondes. La création d'une commande et le passage au statut `Commandée` restent des actions manuelles; une réception doit être enregistrée comme une entrée de stock.
+
+Dans **Commandes fournisseurs**, **Exporter les commandes validées** télécharge les commandes ayant le statut `Commandée`. Les commandes en attente, reçues ou annulées sont exclues. Le fichier reprend les champs du modèle des classeurs : numéro source (ou identifiant généré), date, fournisseur, code et nom du produit, quantité, prix unitaire, montant total, date prévue, statut, responsable et commentaires.
 
 Toutes les routes, sauf la santé, requièrent un jeton lorsque `AUTH_ENABLED=true`.
