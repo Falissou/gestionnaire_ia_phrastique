@@ -64,4 +64,6 @@ Le chat dispose également d'un bouton de message vocal connecté à la session 
 
 Dans **Commandes fournisseurs**, **Exporter les commandes validées** télécharge les commandes ayant le statut `Commandée`. Les commandes en attente, reçues ou annulées sont exclues. Le fichier reprend les champs du modèle des classeurs : numéro source (ou identifiant généré), date, fournisseur, code et nom du produit, quantité, prix unitaire, montant total, date prévue, statut, responsable et commentaires.
 
+Le bon Excel généré lors de la passation contient un onglet **Import entrée** compatible avec l'import des mouvements. Lors de la réception réelle, complétez la colonne **Date Entrée**, puis importez le classeur depuis **Import & migration** comme **Entrées de stock**, avec **Ajuster le stock** coché. La quantité reçue sera ajoutée au stock et enregistrée comme mouvement; le second onglet conserve le bon fournisseur imprimable. Si les quantités effectivement reçues diffèrent du bon, corrigez-les dans l'onglet d'import avant de confirmer.
+
 Toutes les routes, sauf la santé, requièrent un jeton lorsque `AUTH_ENABLED=true`.

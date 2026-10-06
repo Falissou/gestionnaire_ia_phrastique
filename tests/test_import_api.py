@@ -195,6 +195,90 @@ class ImportApiTests(unittest.TestCase):
             finally:
                 main.app.dependency_overrides.pop(main.require_auth, None)
 
+    def test_purchase_order_workbook_imports_as_received_stock_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            product = store.add_product({
+                "product_code": "MED015",
+                "name": "Produit en rupture",
+                "category": "Médicament",
+                "quantity": 0,
+                "min_quantity": 5,
+                "unit_price": 250,
+                "expiry_date": None,
+            })
+            main.app.dependency_overrides[main.require_auth] = lambda: None
+            try:
+                with patch.object(main, "store", store), TestClient(main.app) as client:
+                    order = client.post("/api/commands/place-order", json={
+                        "supplier": "Fournisseur test",
+                        "expected_date": "2026-10-10",
+                        "responsible": "Équipe achats",
+                        "comments": "Réapprovisionnement",
+                        "lines": [{
+                            "product_id": product["id"],
+                            "quantity": 5,
+                            "unit_price": 250,
+                        }],
+                    })
+                    self.assertEqual(order.status_code, 200, order.text)
+                    workbook = load_workbook(BytesIO(order.content))
+                    try:
+                        self.assertEqual(
+                            workbook.sheetnames,
+                            ["Import entrée", "Bon de commande"],
+                        )
+                        entry_sheet = workbook["Import entrée"]
+                        self.assertEqual(
+                            [entry_sheet.cell(1, column).value for column in range(1, 7)],
+                            [
+                                "Code Produit",
+                                "Nom Médicament",
+                                "Quantité à Ajouter",
+                                "Motif",
+                                "Date Entrée",
+                                "Référence",
+                            ],
+                        )
+                        self.assertEqual(entry_sheet["A2"].value, "MED015")
+                        self.assertEqual(entry_sheet["C2"].value, 5)
+                        self.assertIsNone(entry_sheet["E2"].value)
+                        self.assertEqual(entry_sheet["F2"].value, store.commands()[0]["source_order_number"])
+                        entry_sheet["E2"] = "06/10/2026"
+                        output = BytesIO()
+                        workbook.save(output)
+                    finally:
+                        workbook.close()
+
+                    preview = client.post(
+                        "/api/import/preview",
+                        data={"target": "entree", "adjust_stock": "true"},
+                        files={
+                            "file": (
+                                "bon_commande.xlsx",
+                                output.getvalue(),
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            ),
+                        },
+                    )
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    result = preview.json()
+                    self.assertEqual(result["ready_count"], 1)
+                    self.assertEqual(result["invalid_count"], 0)
+                    self.assertEqual(result["rows"][0]["product_code"], "MED015")
+                    self.assertEqual(result["rows"][0]["date"], "2026-10-06")
+                    imported = client.post(
+                        "/api/import/confirm",
+                        data={"preview_id": result["preview_id"]},
+                    )
+                    self.assertEqual(imported.status_code, 200, imported.text)
+                    self.assertEqual(store.products()[0]["quantity"], 5)
+                    movement = store.movements("entree")[0]
+                    self.assertEqual(movement["quantity"], 5)
+                    self.assertEqual(movement["reference"], store.commands()[0]["source_order_number"])
+            finally:
+                main.app.dependency_overrides.pop(main.require_auth, None)
+
     def test_validated_command_export_contains_only_commanded_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStore(Path(directory) / "test.sqlite3")

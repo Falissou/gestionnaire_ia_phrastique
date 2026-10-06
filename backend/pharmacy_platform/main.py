@@ -26,6 +26,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, Uploa
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils.exceptions import InvalidFileException
 from jwt import PyJWKClient
@@ -712,7 +713,51 @@ def _purchase_order_workbook(
     lines: list[dict],
 ) -> bytes:
     workbook = Workbook()
-    sheet = workbook.active
+    import_sheet = workbook.active
+    import_sheet.title = "Import entrée"
+    import_headers = [
+        "Code Produit",
+        "Nom Médicament",
+        "Quantité à Ajouter",
+        "Motif",
+        "Date Entrée",
+        "Référence",
+    ]
+    import_sheet.append(import_headers)
+    for cell in import_sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="287850")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    import_sheet.row_dimensions[1].height = 32
+    for line in lines:
+        import_sheet.append([
+            line["product_code"] or "",
+            line["product_name"],
+            line["quantity"],
+            "Réception de commande",
+            None,
+            order_number,
+        ])
+        for cell in import_sheet[import_sheet.max_row]:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
+        import_sheet.cell(import_sheet.max_row, 5).comment = Comment(
+            "À compléter avec la date réelle de réception avant l'import.",
+            "PharmaStock",
+        )
+    import_sheet.freeze_panes = "A2"
+    import_sheet.auto_filter.ref = import_sheet.dimensions
+    for column, width in {
+        "A": 20,
+        "B": 36,
+        "C": 22,
+        "D": 30,
+        "E": 20,
+        "F": 28,
+    }.items():
+        import_sheet.column_dimensions[column].width = width
+
+    sheet = workbook.create_sheet("Bon de commande")
     sheet.title = "Bon de commande"
     sheet.merge_cells("A1:F1")
     sheet["A1"] = "BON DE COMMANDE"
@@ -760,6 +805,7 @@ def _purchase_order_workbook(
     sheet.cell(total_row, 5).number_format = '#,##0.00'
     sheet.freeze_panes = f"A{header_row + 1}"
     sheet.auto_filter.ref = sheet.dimensions
+    workbook.active = 0
     for column, width in {
         "A": 20,
         "B": 36,
