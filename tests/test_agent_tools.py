@@ -1,6 +1,4 @@
 import json
-import wave
-from io import BytesIO
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -118,7 +116,12 @@ class AgentToolTests(unittest.TestCase):
             result = main.coordinator_chat(main.ChatInput(message=question))
 
         self.assertEqual(result["reply"], "Réponse")
+        self.assertEqual(call_agent.call_args.args[0], main.settings.foundry_agent_names[3])
         self.assertIs(call_agent.call_args.kwargs["request_reference_documents"], False)
+        self.assertNotIn(
+            "/api/chat/voice",
+            {route.path for route in main.app.routes},
+        )
 
     def test_synthetic_coordinator_prompt_does_not_read_sharepoint(self) -> None:
         credential, project, _client = self._mock_foundry()
@@ -315,97 +318,7 @@ class AgentToolTests(unittest.TestCase):
         self.assertEqual(preserved.model_type, VoiceModelType.MANAGED)
         self.assertEqual(preserved.instructions, "Instructions mises à jour")
 
-    def test_voice_wav_parser_accepts_only_expected_pcm_format(self) -> None:
-        from fastapi import UploadFile
-
-        wav_bytes = BytesIO()
-        with wave.open(wav_bytes, "wb") as file:
-            file.setnchannels(1)
-            file.setsampwidth(2)
-            file.setframerate(24_000)
-            file.writeframes(b"\x01\x00" * 240)
-        self.assertEqual(main._decode_voice_wav(wav_bytes.getvalue()), b"\x01\x00" * 240)
-
-        invalid_bytes = BytesIO()
-        with wave.open(invalid_bytes, "wb") as file:
-            file.setnchannels(2)
-            file.setsampwidth(2)
-            file.setframerate(24_000)
-            file.writeframes(b"\x01\x00" * 480)
-        with self.assertRaisesRegex(ValueError, "mono 16 bits"):
-            main._decode_voice_wav(invalid_bytes.getvalue())
-        with self.assertRaises(main.HTTPException) as context:
-            main.coordinator_voice_chat(
-                file=UploadFile(filename="invalide.wav", file=BytesIO(b"audio invalide")),
-            )
-        self.assertEqual(context.exception.status_code, 400)
-
-    def test_voice_agent_turn_sends_audio_and_returns_transcripts_and_audio(self) -> None:
-        from azure.ai.projects.models import VoiceAgentDefinition, VoiceModelType
-
-        class InputTranscription:
-            pass
-
-        class OutputTranscript:
-            pass
-
-        class OutputAudio:
-            pass
-
-        class ResponseDone:
-            pass
-
-        incoming = InputTranscription()
-        incoming.transcript = "Combien de produits en rupture ?"
-        outgoing = OutputTranscript()
-        outgoing.transcript = "Deux produits sont en rupture."
-        audio = OutputAudio()
-        audio.delta = b"\x02\x00" * 24
-        done = ResponseDone()
-        done.response = SimpleNamespace(status="completed")
-
-        connection = MagicMock()
-        connection.recv.side_effect = [incoming, outgoing, audio, done]
-        connection_manager = MagicMock()
-        connection_manager.__enter__.return_value = connection
-        project = MagicMock()
-        project.__enter__.return_value = project
-        project.beta.voice_agents.realtime.connect.return_value = connection_manager
-        project.agents.get.return_value.versions.latest.definition = VoiceAgentDefinition(
-            model_type=VoiceModelType.MANAGED,
-            model="gpt-realtime",
-            instructions="Instructions du test",
-            tools=create_foundry_voice_tools(enable_inventory_email=True),
-        )
-        credential = MagicMock()
-        credential.__enter__.return_value = credential
-        with (
-            patch("azure.ai.projects.AIProjectClient", return_value=project),
-            patch("azure.identity.DefaultAzureCredential", return_value=credential),
-            patch(
-                "azure.ai.projects.models.RealtimeServerEventConversationItemInputAudioTranscriptionCompleted",
-                InputTranscription,
-            ),
-            patch(
-                "azure.ai.projects.models.RealtimeServerEventResponseAudioTranscriptDone",
-                OutputTranscript,
-            ),
-            patch("azure.ai.projects.models.RealtimeServerEventResponseAudioDelta", OutputAudio),
-            patch("azure.ai.projects.models.RealtimeServerEventResponseDone", ResponseDone),
-        ):
-            result = main._voice_agent_turn("GestionAgent", audio_pcm=b"\x01\x00" * 240)
-
-        self.assertEqual(result["input_transcript"], "Combien de produits en rupture ?")
-        self.assertEqual(result["reply"], "Deux produits sont en rupture.")
-        self.assertEqual(result["audio_pcm"], b"\x02\x00" * 24)
-        self.assertEqual(
-            connection.input_audio_buffer.append.call_args.kwargs["audio"],
-            b"\x01\x00" * 240 + bytes(24_000 * 2 * 3 // 4),
-        )
-        connection.input_audio_buffer.commit.assert_called_once_with()
-        connection.response.create.assert_called_once_with()
-
-    def test_foundry_reply_uses_realtime_for_voice_agent_definitions(self) -> None:
+    def test_foundry_reply_rejects_voice_agents_without_realtime_session(self) -> None:
         from azure.ai.projects.models import VoiceAgentDefinition, VoiceModelType
 
         credential, project, client = self._mock_foundry()
@@ -414,25 +327,19 @@ class AgentToolTests(unittest.TestCase):
             model="gpt-realtime",
             instructions="Instructions du test",
         )
-        voice_reply = {
-            "reply": "Réponse vocale",
-            "input_transcript": "",
-            "audio_pcm": b"\x02\x00",
-            "proposals": [],
-        }
         with (
             patch.object(main.settings, "foundry_project_endpoint", "https://example.test"),
             patch("pharmacy_platform.main.read_configured_documents", return_value=[]),
             patch("azure.ai.projects.AIProjectClient", return_value=project),
             patch("azure.identity.DefaultAzureCredential", return_value=credential),
-            patch("pharmacy_platform.main._voice_agent_turn", return_value=voice_reply) as voice_turn,
         ):
-            result = main._foundry_reply("GestionAgent", "Bonjour")
+            with self.assertRaises(main.HTTPException) as context:
+                main._foundry_reply("GestionAgent", "Bonjour")
 
-        voice_turn.assert_called_once_with("GestionAgent", text="Bonjour")
-        self.assertEqual(result["reply"], "Réponse vocale")
-        self.assertTrue(result["audio_reply"].startswith("UklGR"))
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertIn("mode Voice", context.exception.detail)
         client.responses.create.assert_not_called()
+        project.beta.voice_agents.realtime.connect.assert_not_called()
 
     def test_command_agent_can_be_created_with_foundry_web_search(self) -> None:
         from azure.ai.projects.models import PromptAgentDefinition

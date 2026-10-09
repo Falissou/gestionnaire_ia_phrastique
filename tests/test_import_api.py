@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from pharmacy_platform import main
 from pharmacy_platform.sqlite_store import SQLiteStore
@@ -41,6 +41,41 @@ class ImportApiTests(unittest.TestCase):
                         "Sortis_type.xlsx": "sortie",
                     },
                 )
+                self.assertTrue(all(item["default"] for item in references.json()))
+            finally:
+                main.app.dependency_overrides.pop(main.require_auth, None)
+
+    def test_import_automatically_uses_reference_for_selected_data_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append([
+                "Code Produit", "Nom Médicament", "Catégorie", "Fournisseur",
+                "Quantité Stock", "Seuil Alerte", "Prix Unitaire (FCFA)",
+                "Date Entrée", "Date Expiration", "Statut Stock", "Commentaires",
+            ])
+            sheet.append([
+                "MED001", "Paracétamol", "Antalgique", "Pharma Plus", 19, 5,
+                500, "03/09/2026", "21/01/2027", "Disponible", "Stock initial",
+            ])
+            workbook.save(data_dir / "Stock_Medicaments.xlsx")
+
+            store = SQLiteStore(data_dir / "test.sqlite3")
+            main.app.dependency_overrides[main.require_auth] = lambda: None
+            try:
+                with (
+                    patch.object(main, "store", store),
+                    patch.object(main.settings, "data_dir", data_dir),
+                    TestClient(main.app) as client,
+                ):
+                    preview = client.post(
+                        "/api/import/preview",
+                        data={"target": "product"},
+                    )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                self.assertEqual(preview.json()["filename"], "Stock_Medicaments.xlsx")
+                self.assertEqual(preview.json()["ready_count"], 1)
             finally:
                 main.app.dependency_overrides.pop(main.require_auth, None)
 

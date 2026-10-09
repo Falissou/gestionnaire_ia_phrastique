@@ -6,9 +6,11 @@ SQLite est la source opérationnelle de l'application. Par défaut, le fichier e
 
 Les classeurs Excel présents dans `data/` sont des sources de référence, pas des bases modifiées directement par l'application. Ils ne sont ni importés ni modifiés automatiquement au démarrage.
 
+Les listes du catalogue, des commandes, des suggestions, des mouvements et des alertes sont paginées. Chaque liste permet d'afficher 5 ou 10 lignes à la fois et de naviguer vers les pages précédentes ou suivantes.
+
 ## Migration des classeurs
 
-Dans l'application, ouvrez **Import & migration**. Pour les fichiers de référence déjà placés dans `data/`, choisissez le type correspondant, puis le classeur local. Vous pouvez également téléverser un fichier `.xlsx` ou `.csv` (UTF-8, 5 Mo maximum, 5 000 lignes).
+Dans l'application, ouvrez **Import & migration**. Choisissez le type de données : le classeur de référence correspondant dans `data/` est sélectionné automatiquement. Vous pouvez également téléverser un fichier `.xlsx` ou `.csv` (UTF-8, 5 Mo maximum, 5 000 lignes), qui remplacera la référence automatique.
 
 Les correspondances reconnues sont :
 
@@ -58,7 +60,7 @@ Les agents lisent les données de SQLite et peuvent proposer des ajouts, mais la
 
 GestionAgent peut envoyer par SMTP un état de stock lorsque l'utilisateur le demande explicitement. Définissez `SMTP_RECIPIENTS` dans `.env` (adresses séparées par `,` ou `;`) avec `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` et, si requis, `SMTP_USER` / `SMTP_PASSWORD`. Les destinataires sont fixes côté serveur et ne peuvent pas être choisis par l'agent.
 
-Le chat dispose également d'un bouton de message vocal connecté à la session temps réel Voice de Foundry. Celui-ci nécessite un agent GestionAgent créé et publié avec le mode d'interaction Voice, `FOUNDRY_VOICE_AGENT_NAME` (par défaut `GestionAgent`), le paquet `azure-ai-projects[voice]`, et un site HTTPS/localhost avec accès au microphone. Les messages vocaux sont limités à 60 secondes et envoyés en WAV PCM mono 16 bits à 24 kHz; l'application effectue la conversion dans le navigateur. Les outils locaux continuent à être exécutés par le backend.
+Le chat fonctionne uniquement en texte et n'ouvre pas de session audio temps réel Foundry. L'agent GestionAgent configuré dans Foundry doit être de type Prompt; un agent créé en mode Voice n'est pas utilisé pour les échanges du chat.
 
 `GET /api/recommendations` inclut `orders`, une liste de produits sous leur seuil (hors commandes déjà actives) et une quantité suggérée pour remonter au seuil. Le navigateur met en cache les suggestions pendant cinq heures et les recharge au plus à cette fréquence, y compris après une visite interrompue. Les données opérationnelles restent actualisées toutes les 60 secondes. La création d'une commande et le passage au statut `Commandée` restent des actions manuelles; une réception doit être enregistrée comme une entrée de stock.
 

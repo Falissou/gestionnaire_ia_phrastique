@@ -16,7 +16,14 @@ let toastTimer;
 let dataImportFile = null;
 let dataImportPreviewId = null;
 let referenceFiles = [];
-let voiceCapture = null;
+const listPages = {
+  products: { page: 1, pageSize: 10, control: "products-pagination" },
+  entries: { page: 1, pageSize: 10, control: "entries-pagination" },
+  exits: { page: 1, pageSize: 10, control: "exits-pagination" },
+  commands: { page: 1, pageSize: 5, control: "commands-pagination" },
+  suggestions: { page: 1, pageSize: 10, control: "suggestions-pagination" },
+  alerts: { page: 1, pageSize: 10, control: "alerts-pagination" },
+};
 
 async function api(path, options = {}) {
   const token = localStorage.getItem("pharmastock-token");
@@ -71,6 +78,35 @@ function alertMarkup(alert) {
   return `<div class="alert-row"><span class="alert-symbol ${escapeHtml(alert.severity)}">${symbol}</span><div class="alert-copy"><strong>${escapeHtml(alert.product)}</strong><span>${escapeHtml(alert.message)}</span></div></div>`;
 }
 
+function pageItems(key, items) {
+  const settings = listPages[key];
+  const pageCount = Math.max(1, Math.ceil(items.length / settings.pageSize));
+  settings.page = Math.min(settings.page, pageCount);
+  const start = (settings.page - 1) * settings.pageSize;
+  return items.slice(start, start + settings.pageSize);
+}
+
+function renderPagination(key, total) {
+  const settings = listPages[key];
+  const pageCount = Math.max(1, Math.ceil(total / settings.pageSize));
+  settings.page = Math.min(settings.page, pageCount);
+  const first = total ? (settings.page - 1) * settings.pageSize + 1 : 0;
+  const last = Math.min(settings.page * settings.pageSize, total);
+  $(`#${settings.control}`).innerHTML = `
+    <div class="list-pagination">
+      <span>Affichage de ${first} à ${last} sur ${total}</span>
+      <label>Par page
+        <select data-page-size="${key}" aria-label="Nombre de lignes par page">
+          <option value="5" ${settings.pageSize === 5 ? "selected" : ""}>5</option>
+          <option value="10" ${settings.pageSize === 10 ? "selected" : ""}>10</option>
+        </select>
+      </label>
+      <span>Page ${settings.page} / ${pageCount}</span>
+      <button class="button button-secondary" type="button" data-page-action="previous" data-page-list="${key}" ${settings.page <= 1 ? "disabled" : ""}>Précédent</button>
+      <button class="button button-secondary" type="button" data-page-action="next" data-page-list="${key}" ${settings.page >= pageCount ? "disabled" : ""}>Suivant</button>
+    </div>`;
+}
+
 function renderDashboard(data) {
   $("#metric-products").textContent = data.product_count;
   $("#metric-units").textContent = data.total_units.toLocaleString("fr-FR");
@@ -88,25 +124,29 @@ function renderProducts() {
   const filtered = state.products.filter((item) =>
     `${item.name} ${item.category} ${item.supplier || ""} ${item.comments || ""}`.toLocaleLowerCase("fr").includes(query));
   $("#product-total").textContent = `${filtered.length} produit(s)`;
-  $("#products-table").innerHTML = filtered.length ? filtered.map((product) => {
+  const visible = pageItems("products", filtered);
+  $("#products-table").innerHTML = filtered.length ? visible.map((product) => {
     const [label, cls] = statusFor(product);
     return `<tr><td>${escapeHtml(product.product_code || "—")}</td><td><strong>${escapeHtml(product.name)}</strong></td><td>${escapeHtml(product.category)}</td><td>${escapeHtml(product.supplier || "—")}</td><td><strong>${product.quantity}</strong></td><td>${product.min_quantity}</td><td>${currencyText(product.unit_price)}</td><td>${dateText(product.entry_date)}</td><td>${dateText(product.expiry_date)}</td><td>${escapeHtml(product.source_status || "—")}</td><td>${escapeHtml(product.comments || "—")}</td><td><span class="stock-tag ${cls}">${label}</span></td></tr>`;
   }).join("") : '<tr><td colspan="12" class="empty-state">Aucun produit à afficher.</td></tr>';
+  renderPagination("products", filtered.length);
 }
 
 function renderMovements() {
-  const renderRegister = (type, target) => {
+  const renderRegister = (type, key, target) => {
     const items = state.movements.filter((item) => item.type === type).slice().reverse();
     $(target).innerHTML = items.length
-      ? items.map((item) => `<tr><td>${dateText(item.date)}</td><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${item.quantity}</td><td>${escapeHtml(item.reason)}</td><td>${escapeHtml(item.reference || "—")}</td></tr>`).join("")
+      ? pageItems(key, items).map((item) => `<tr><td>${dateText(item.date)}</td><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${item.quantity}</td><td>${escapeHtml(item.reason)}</td><td>${escapeHtml(item.reference || "—")}</td></tr>`).join("")
       : `<tr><td colspan="5" class="empty-state">Aucune ${type === "entree" ? "entrée" : "sortie"} enregistrée.</td></tr>`;
+    renderPagination(key, items.length);
   };
-  renderRegister("entree", "#entries-table");
-  renderRegister("sortie", "#exits-table");
+  renderRegister("entree", "entries", "#entries-table");
+  renderRegister("sortie", "exits", "#exits-table");
 }
 
 function renderCommands() {
-  $("#commands-table").innerHTML = state.commands.length ? state.commands.map((item) => `<tr><td>${escapeHtml(item.source_order_number || item.id.slice(0, 8))}</td><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${escapeHtml(item.product_code || "—")}</td><td>${item.quantity}</td><td>${escapeHtml(item.supplier)}</td><td>${currencyText(item.unit_price)}</td><td>${currencyText(item.total_amount)}</td><td>${dateText(item.order_date)}</td><td>${dateText(item.expected_date)}</td><td>${escapeHtml(item.responsible || "—")}</td><td>${escapeHtml(item.comments || "—")}</td><td><span class="stock-tag ${item.status === "Reçue" ? "ok" : "soon"}">${escapeHtml(item.status)}</span><select class="command-status" data-id="${escapeHtml(item.id)}"><option ${item.status === "En attente" ? "selected" : ""}>En attente</option><option ${item.status === "Commandée" ? "selected" : ""}>Commandée</option><option ${item.status === "Reçue" ? "selected" : ""}>Reçue</option><option ${item.status === "Annulée" ? "selected" : ""}>Annulée</option></select>${item.status === "En attente" ? `<button class="button button-secondary validate-command" data-id="${escapeHtml(item.id)}" type="button">Valider comme commandée</button>` : ""}</td></tr>`).join("") : '<tr><td colspan="12" class="empty-state">Aucune commande enregistrée.</td></tr>';
+  $("#commands-table").innerHTML = state.commands.length ? pageItems("commands", state.commands).map((item) => `<tr><td>${escapeHtml(item.source_order_number || item.id.slice(0, 8))}</td><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${escapeHtml(item.product_code || "—")}</td><td>${item.quantity}</td><td>${escapeHtml(item.supplier)}</td><td>${currencyText(item.unit_price)}</td><td>${currencyText(item.total_amount)}</td><td>${dateText(item.order_date)}</td><td>${dateText(item.expected_date)}</td><td>${escapeHtml(item.responsible || "—")}</td><td>${escapeHtml(item.comments || "—")}</td><td><span class="stock-tag ${item.status === "Reçue" ? "ok" : "soon"}">${escapeHtml(item.status)}</span><select class="command-status" data-id="${escapeHtml(item.id)}"><option ${item.status === "En attente" ? "selected" : ""}>En attente</option><option ${item.status === "Commandée" ? "selected" : ""}>Commandée</option><option ${item.status === "Reçue" ? "selected" : ""}>Reçue</option><option ${item.status === "Annulée" ? "selected" : ""}>Annulée</option></select>${item.status === "En attente" ? `<button class="button button-secondary validate-command" data-id="${escapeHtml(item.id)}" type="button">Valider comme commandée</button>` : ""}</td></tr>`).join("") : '<tr><td colspan="12" class="empty-state">Aucune commande enregistrée.</td></tr>';
+  renderPagination("commands", state.commands.length);
   document.querySelectorAll(".command-status").forEach((select) => select.addEventListener("change", async () => {
     try {
       await api(`/commands/${encodeURIComponent(select.dataset.id)}`, { method: "PATCH", body: JSON.stringify({ status: select.value }) });
@@ -136,8 +176,9 @@ function renderOrderSuggestions() {
     [...state.selectedSuggestionIds].filter((id) => availableIds.has(id)),
   );
   $("#suggested-orders").innerHTML = state.orderSuggestions.length
-    ? state.orderSuggestions.map((item) => `<tr><td><input class="suggestion-select" type="checkbox" aria-label="Sélectionner ${escapeHtml(item.product_name)}" data-id="${escapeHtml(item.product_id)}" ${state.selectedSuggestionIds.has(item.product_id) ? "checked" : ""}></td><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${escapeHtml(item.supplier || "À renseigner")}</td><td>${item.current_quantity} / ${item.min_quantity}</td><td>${item.quantity}</td><td><span class="stock-tag ${item.priority === "critical" ? "low" : "soon"}">${item.priority === "critical" ? "Critique" : "À surveiller"}</span></td></tr>`).join("")
+    ? pageItems("suggestions", state.orderSuggestions).map((item) => `<tr><td><input class="suggestion-select" type="checkbox" aria-label="Sélectionner ${escapeHtml(item.product_name)}" data-id="${escapeHtml(item.product_id)}" ${state.selectedSuggestionIds.has(item.product_id) ? "checked" : ""}></td><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${escapeHtml(item.supplier || "À renseigner")}</td><td>${item.current_quantity} / ${item.min_quantity}</td><td>${item.quantity}</td><td><span class="stock-tag ${item.priority === "critical" ? "low" : "soon"}">${item.priority === "critical" ? "Critique" : "À surveiller"}</span></td></tr>`).join("")
     : '<tr><td colspan="6" class="empty-state">Aucune suggestion de réapprovisionnement.</td></tr>';
+  renderPagination("suggestions", state.orderSuggestions.length);
   document.querySelectorAll(".suggestion-select").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) state.selectedSuggestionIds.add(checkbox.dataset.id);
@@ -233,8 +274,35 @@ async function refreshOrderSuggestions(force = false) {
 }
 
 function renderAlerts() {
-  $("#all-alerts").innerHTML = state.alerts.length ? state.alerts.map((item) => `<article class="alert-card ${escapeHtml(item.severity)}"><strong>${escapeHtml(item.product)}</strong><p>${escapeHtml(item.message)}</p></article>`).join("") : '<div class="panel empty-state">Aucune alerte de stock ou d’expiration.</div>';
+  $("#all-alerts").innerHTML = state.alerts.length ? pageItems("alerts", state.alerts).map((item) => `<article class="alert-card ${escapeHtml(item.severity)}"><strong>${escapeHtml(item.product)}</strong><p>${escapeHtml(item.message)}</p></article>`).join("") : '<div class="panel empty-state">Aucune alerte de stock ou d’expiration.</div>';
+  renderPagination("alerts", state.alerts.length);
 }
+
+const listRenderers = {
+  products: renderProducts,
+  entries: renderMovements,
+  exits: renderMovements,
+  commands: renderCommands,
+  suggestions: renderOrderSuggestions,
+  alerts: renderAlerts,
+};
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-page-action]");
+  if (!button) return;
+  const settings = listPages[button.dataset.pageList];
+  settings.page += button.dataset.pageAction === "next" ? 1 : -1;
+  listRenderers[button.dataset.pageList]();
+});
+
+document.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-page-size]");
+  if (!select) return;
+  const settings = listPages[select.dataset.pageSize];
+  settings.pageSize = Number(select.value);
+  settings.page = 1;
+  listRenderers[select.dataset.pageSize]();
+});
 
 async function refresh() {
   const suggestionsRefresh = refreshOrderSuggestions();
@@ -414,22 +482,33 @@ $("#purchase-order-form").addEventListener("submit", async (event) => {
   }
 });
 
-function updateReferenceOptions() {
+function updateImportReferenceLabel() {
+  const target = $("#migration-target").value;
+  const reference = referenceFiles.find((item) => item.target === target && item.default);
+  const label = $("#migration-reference-label");
+  if (dataImportFile) {
+    label.textContent = `Le fichier téléversé « ${dataImportFile.name} » remplacera le classeur de référence automatique.`;
+  } else if (reference) {
+    label.textContent = `Classeur de référence sélectionné automatiquement : ${reference.filename}`;
+  } else {
+    label.textContent = "Aucun classeur de référence disponible pour ce type. Téléversez un fichier Excel ou CSV.";
+  }
+}
+
+function defaultImportReference() {
+  return referenceFiles.find((item) =>
+    item.target === $("#migration-target").value && item.default);
+}
+
+function resetImportPreview() {
   dataImportPreviewId = null;
   $("#data-import-preview").innerHTML = "";
   $("#confirm-data-import").disabled = true;
   const target = $("#migration-target").value;
-  const select = $("#reference-file");
-  const current = select.value;
-  select.innerHTML = '<option value="">Choisir un fichier local à téléverser…</option>' +
-    referenceFiles.filter((item) => item.target === target).map((item) =>
-      `<option value="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</option>`).join("");
-  if (referenceFiles.some((item) => item.target === target && item.filename === current)) {
-    select.value = current;
-  }
   const movements = target === "entree" || target === "sortie";
   $("#adjust-import-stock").disabled = !movements;
   $("#adjust-import-stock").checked = false;
+  updateImportReferenceLabel();
 }
 
 function migrationFormData() {
@@ -437,7 +516,9 @@ function migrationFormData() {
   form.append("target", $("#migration-target").value);
   form.append("adjust_stock", String($("#adjust-import-stock").checked));
   if (dataImportFile) form.append("file", dataImportFile);
-  else if ($("#reference-file").value) form.append("reference_file", $("#reference-file").value);
+  else if (defaultImportReference()) {
+    form.append("reference_file", defaultImportReference().filename);
+  }
   return form;
 }
 
@@ -466,26 +547,14 @@ $("#open-data-import").addEventListener("click", async () => {
   $("#adjust-import-stock").checked = false;
   try {
     referenceFiles = await api("/import/references");
-    updateReferenceOptions();
+    updateImportReferenceLabel();
     $("#data-import-dialog").showModal();
   } catch (error) { notify(error.message); }
 });
-$("#migration-target").addEventListener("change", updateReferenceOptions);
+$("#migration-target").addEventListener("change", resetImportPreview);
 $("#migration-file").addEventListener("change", () => {
   dataImportFile = $("#migration-file").files[0] || null;
-  dataImportPreviewId = null;
-  if (dataImportFile) $("#reference-file").value = "";
-  $("#data-import-preview").innerHTML = "";
-  $("#confirm-data-import").disabled = true;
-});
-$("#reference-file").addEventListener("change", () => {
-  dataImportPreviewId = null;
-  if ($("#reference-file").value) {
-    $("#migration-file").value = "";
-    dataImportFile = null;
-  }
-  $("#data-import-preview").innerHTML = "";
-  $("#confirm-data-import").disabled = true;
+  resetImportPreview();
 });
 $("#adjust-import-stock").addEventListener("change", () => {
   dataImportPreviewId = null;
@@ -494,8 +563,8 @@ $("#adjust-import-stock").addEventListener("change", () => {
 });
 $("#preview-data-import").addEventListener("click", async () => {
   dataImportPreviewId = null;
-  if (!dataImportFile && !$("#reference-file").value) {
-    notify("Choisissez un classeur de référence ou un fichier à téléverser.");
+  if (!dataImportFile && !defaultImportReference()) {
+    notify("Aucun classeur de référence disponible. Téléversez un fichier CSV ou Excel.");
     return;
   }
   try {
@@ -599,7 +668,10 @@ function openMovementForm(type) {
 $("#add-entry").addEventListener("click", () => openMovementForm("entree"));
 $("#add-exit").addEventListener("click", () => openMovementForm("sortie"));
 
-$("#product-search").addEventListener("input", renderProducts);
+$("#product-search").addEventListener("input", () => {
+  listPages.products.page = 1;
+  renderProducts();
+});
 $("#send-alert-email").addEventListener("click", async () => {
   const recipient = window.prompt("Adresse e-mail du destinataire :");
   if (!recipient) return;
@@ -660,140 +732,6 @@ function showAgentProposal(proposal, box) {
   box.append(card);
 }
 
-function createVoiceWav(frames, sourceRate) {
-  const frameCount = frames.reduce((total, frame) => total + frame.length, 0);
-  const source = new Float32Array(frameCount);
-  let offset = 0;
-  frames.forEach((frame) => {
-    source.set(frame, offset);
-    offset += frame.length;
-  });
-  const sampleRate = 24000;
-  const outputCount = Math.floor(source.length * sampleRate / sourceRate);
-  if (!outputCount) throw new Error("Aucun son n’a été capté.");
-  const buffer = new ArrayBuffer(44 + outputCount * 2);
-  const view = new DataView(buffer);
-  const writeText = (position, text) => {
-    for (let index = 0; index < text.length; index += 1) {
-      view.setUint8(position + index, text.charCodeAt(index));
-    }
-  };
-  writeText(0, "RIFF");
-  view.setUint32(4, 36 + outputCount * 2, true);
-  writeText(8, "WAVE");
-  writeText(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeText(36, "data");
-  view.setUint32(40, outputCount * 2, true);
-  const ratio = sourceRate / sampleRate;
-  for (let index = 0; index < outputCount; index += 1) {
-    const position = index * ratio;
-    const start = Math.floor(position);
-    const fraction = position - start;
-    const first = source[start] || 0;
-    const second = source[Math.min(start + 1, source.length - 1)] || 0;
-    const sample = Math.max(-1, Math.min(1, first + (second - first) * fraction));
-    view.setInt16(44 + index * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
-  }
-  return new Blob([buffer], { type: "audio/wav" });
-}
-
-function appendVoiceReplyAudio(box, audioBase64) {
-  if (!audioBase64) return;
-  const player = document.createElement("audio");
-  player.controls = true;
-  player.preload = "none";
-  player.src = `data:audio/wav;base64,${audioBase64}`;
-  box.append(player);
-}
-
-async function sendVoiceMessage(frames, sourceRate) {
-  const box = $("#chat-messages");
-  const userMessage = document.createElement("div");
-  userMessage.className = "chat-bubble user";
-  userMessage.textContent = "Message vocal en cours d’envoi…";
-  box.append(userMessage);
-  const waiting = document.createElement("div");
-  waiting.className = "chat-bubble assistant";
-  waiting.textContent = "GestionAgent écoute votre message…";
-  box.append(waiting);
-  box.scrollTop = box.scrollHeight;
-  try {
-    const form = new FormData();
-    form.append("file", createVoiceWav(frames, sourceRate), "message-vocal.wav");
-    const answer = await api("/chat/voice", { method: "POST", body: form });
-    userMessage.textContent = answer.input_transcript || "Message vocal";
-    waiting.textContent = answer.reply || "GestionAgent n’a pas fourni de réponse transcrite.";
-    appendVoiceReplyAudio(waiting, answer.audio_reply);
-    (answer.proposals || []).forEach((proposal) => showAgentProposal(proposal, waiting));
-  } catch (error) {
-    userMessage.textContent = "Message vocal";
-    waiting.textContent = error.message;
-  }
-  box.scrollTop = box.scrollHeight;
-}
-
-async function startVoiceCapture() {
-  if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) {
-    throw new Error("L’enregistrement vocal nécessite un navigateur compatible et un accès HTTPS.");
-  }
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const context = new AudioContext();
-  const source = context.createMediaStreamSource(stream);
-  const processor = context.createScriptProcessor(4096, 1, 1);
-  const frames = [];
-  processor.onaudioprocess = (event) => {
-    frames.push(new Float32Array(event.inputBuffer.getChannelData(0)));
-    event.outputBuffer.getChannelData(0).fill(0);
-  };
-  source.connect(processor);
-  processor.connect(context.destination);
-  voiceCapture = { stream, context, source, processor, frames, sourceRate: context.sampleRate };
-  $("#record-voice").textContent = "Terminer et envoyer";
-  $("#record-voice").setAttribute("aria-pressed", "true");
-  $("#voice-status").textContent = "Enregistrement… (60 secondes maximum)";
-  voiceCapture.timeout = window.setTimeout(stopVoiceCapture, 60_000);
-}
-
-async function stopVoiceCapture() {
-  if (!voiceCapture) return;
-  const capture = voiceCapture;
-  voiceCapture = null;
-  window.clearTimeout(capture.timeout);
-  capture.processor.disconnect();
-  capture.source.disconnect();
-  capture.stream.getTracks().forEach((track) => track.stop());
-  await capture.context.close();
-  $("#record-voice").textContent = "🎙 Message vocal";
-  $("#record-voice").setAttribute("aria-pressed", "false");
-  $("#voice-status").textContent = "Envoi du message vocal à GestionAgent…";
-  try {
-    await sendVoiceMessage(capture.frames, capture.sourceRate);
-  } finally {
-    $("#voice-status").textContent = "";
-  }
-}
-
-$("#record-voice").addEventListener("click", async () => {
-  const button = $("#record-voice");
-  button.disabled = true;
-  try {
-    if (voiceCapture) await stopVoiceCapture();
-    else await startVoiceCapture();
-  } catch (error) {
-    notify(error.message);
-    $("#voice-status").textContent = "";
-  } finally {
-    button.disabled = false;
-  }
-});
-
 $("#chat-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("#chat-message");
@@ -810,7 +748,6 @@ $("#chat-form").addEventListener("submit", async (event) => {
   try {
     const answer = await api("/chat", { method: "POST", body: JSON.stringify({ message }) });
     waiting.textContent = answer.reply;
-    appendVoiceReplyAudio(waiting, answer.audio_reply);
     const reports = answer.agent_reports || [];
     if (reports.length) {
       const details = document.createElement("details");

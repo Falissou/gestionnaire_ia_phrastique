@@ -1,7 +1,6 @@
 """Pharmacy stock-management API and lightweight web application."""
 
 import csv
-import base64
 from datetime import date, datetime
 from email.message import EmailMessage
 from io import BytesIO, StringIO
@@ -18,7 +17,6 @@ import time
 from typing import Literal
 from urllib.error import URLError
 from uuid import uuid4
-import wave
 from zipfile import BadZipFile
 
 import jwt
@@ -49,9 +47,6 @@ settings = Settings()
 store = SQLiteStore(settings.sqlite_database_path)
 MAX_COMMAND_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_COMMAND_UPLOAD_ROWS = 500
-MAX_VOICE_UPLOAD_BYTES = 5 * 1024 * 1024
-MAX_VOICE_DURATION_SECONDS = 60
-VOICE_SAMPLE_RATE = 24_000
 IMPORT_REFERENCE_FILES = {
     "Stock_Medicaments.xlsx": "product",
     "Commandes_type.xlsx": "command",
@@ -60,6 +55,12 @@ IMPORT_REFERENCE_FILES = {
     "Commandes_Fournisseurs.xlsx": "command",
     "Entrees_Stock.xlsx": "entree",
     "Sorties_Stock.xlsx": "sortie",
+}
+IMPORT_REFERENCE_PREFERENCE = {
+    "product": ("Stock_Medicaments.xlsx",),
+    "command": ("Commandes_type.xlsx", "Commandes_Fournisseurs.xlsx"),
+    "entree": ("Entrée_type.xlsx", "Entrees_Stock.xlsx"),
+    "sortie": ("Sortis_type.xlsx", "Sorties_Stock.xlsx"),
 }
 IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
 pending_imports: dict[str, dict] = {}
@@ -370,7 +371,32 @@ def _reference_import_files() -> list[dict]:
                 "filename": path.name,
                 "target": IMPORT_REFERENCE_FILES[normalized_name],
             })
+    for target, preferred_names in IMPORT_REFERENCE_PREFERENCE.items():
+        preferred_reference = next(
+            (
+                reference
+                for preferred_name in preferred_names
+                for reference in references
+                if reference["target"] == target
+                and unicodedata.normalize("NFC", reference["filename"]) == preferred_name
+            ),
+            None,
+        )
+        if preferred_reference:
+            preferred_reference["default"] = True
     return references
+
+
+def _default_import_reference(target: str) -> str | None:
+    references = _reference_import_files()
+    for preferred_name in IMPORT_REFERENCE_PREFERENCE.get(target, ()):
+        for reference in references:
+            if (
+                reference["target"] == target
+                and unicodedata.normalize("NFC", reference["filename"]) == preferred_name
+            ):
+                return reference["filename"]
+    return None
 
 
 async def _import_file_content(
@@ -384,7 +410,15 @@ async def _import_file_content(
             raise HTTPException(status_code=413, detail="La taille maximale du fichier est de 5 Mo.")
         return file.filename, content
     if not reference_file:
-        raise HTTPException(status_code=400, detail="Choisissez un fichier de référence ou téléversez un fichier.")
+        reference_file = _default_import_reference(target)
+    if not reference_file:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Aucun classeur de référence n'est configuré pour ce type de données. "
+                "Téléversez un fichier Excel ou CSV."
+            ),
+        )
     expected_target = IMPORT_REFERENCE_FILES.get(unicodedata.normalize("NFC", reference_file))
     if expected_target is None:
         raise HTTPException(status_code=400, detail="Fichier de référence non autorisé.")
@@ -1097,10 +1131,7 @@ def _execute_agent_tool(
                 "data": MovementInput.model_validate(arguments).model_dump(mode="json"),
             }
         elif tool_name == "send_inventory_report_email":
-            if agent_name not in {
-                settings.foundry_agent_names[3],
-                settings.foundry_voice_agent_name,
-            }:
+            if agent_name != settings.foundry_agent_names[3]:
                 return {"error": "Cet outil est réservé à GestionAgent."}
             if arguments:
                 return {"error": "Cet outil ne prend aucun argument."}
@@ -1112,227 +1143,6 @@ def _execute_agent_tool(
         return {"error": str(detail)}
     proposals.append(result)
     return result
-
-
-def _voice_agent_turn(
-    agent_name: str,
-    *,
-    audio_pcm: bytes | None = None,
-    text: str | None = None,
-) -> dict:
-    from azure.ai.projects import AIProjectClient
-    from azure.ai.projects.models import (
-        RealtimeConversationItemFunctionCallOutput,
-        RealtimeConversationItemMessageUser,
-        RealtimeConversationItemMessageUserContent,
-        RealtimeConversationItemType,
-        RealtimeServerEventConversationItemInputAudioTranscriptionCompleted,
-        RealtimeServerEventError,
-        RealtimeServerEventResponseAudioDelta,
-        RealtimeServerEventResponseAudioTranscriptDone,
-        RealtimeServerEventResponseDone,
-        RealtimeServerEventResponseFunctionCallArgumentsDone,
-        RealtimeServerEventResponseTextDone,
-        VoiceAgentDefinition,
-    )
-    from azure.core.exceptions import ClientAuthenticationError
-    from azure.identity import CredentialUnavailableError, DefaultAzureCredential
-    from openai import APIStatusError
-
-    if not settings.foundry_project_endpoint:
-        raise HTTPException(status_code=503, detail="FOUNDRY_PROJECT_ENDPOINT doit être configuré.")
-    if (audio_pcm is None) == (text is None):
-        raise ValueError("Une entrée vocale doit contenir un audio ou un texte, mais pas les deux.")
-
-    proposals = []
-    input_transcript = ""
-    reply = ""
-    audio_chunks = []
-    try:
-        with (
-            DefaultAzureCredential() as credential,
-            AIProjectClient(
-                endpoint=settings.foundry_project_endpoint,
-                credential=credential,
-                allow_preview=True,
-            ) as project,
-        ):
-            agent = project.agents.get(agent_name=agent_name)
-            definition = agent.versions.latest.definition
-            if not isinstance(definition, VoiceAgentDefinition):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"L'agent Foundry {agent_name} n'est pas en mode vocal. "
-                        "Créez et publiez un agent avec le mode d'interaction Voice."
-                    ),
-                )
-            configured_tools = {
-                getattr(tool, "name", None)
-                for tool in (definition.tools or [])
-            }
-            required_tools = {tool["name"] for tool in AGENT_TOOLS}
-            if agent_name in {
-                settings.foundry_agent_names[3],
-                settings.foundry_voice_agent_name,
-            }:
-                required_tools.update(tool["name"] for tool in GESTION_AGENT_TOOLS)
-            missing_tools = required_tools - configured_tools
-            if missing_tools:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Les outils applicatifs manquent dans l'agent vocal. "
-                        "Publiez une version actualisée avec "
-                        "python scripts/create_agent.py --agent "
-                        f"{agent_name} --update."
-                    ),
-                )
-            with project.beta.voice_agents.realtime.connect(agent_name=agent_name) as connection:
-                if definition.greeting is not None:
-                    while True:
-                        greeting_event = connection.recv(timeout=45)
-                        if isinstance(greeting_event, RealtimeServerEventError):
-                            raise HTTPException(
-                                status_code=502,
-                                detail=f"Erreur de session vocale Foundry : {greeting_event.error.message}",
-                            )
-                        if isinstance(greeting_event, RealtimeServerEventResponseDone):
-                            if greeting_event.response.status != "completed":
-                                raise HTTPException(
-                                    status_code=502,
-                                    detail="Le message d'accueil vocal Foundry a échoué.",
-                                )
-                            break
-                if audio_pcm is not None:
-                    audio_input = getattr(getattr(definition, "audio", None), "input", None)
-                    turn_detection = getattr(audio_input, "turn_detection", None)
-                    turn_type = str(getattr(turn_detection, "type", "")).lower()
-                    uses_server_vad = "vad" in turn_type
-                    payload = audio_pcm + bytes(VOICE_SAMPLE_RATE * 2 * 3 // 4)
-                    connection.input_audio_buffer.append(audio=payload)
-                    if not uses_server_vad:
-                        connection.input_audio_buffer.commit()
-                        connection.response.create()
-                else:
-                    connection.conversation.item.create(
-                        item=RealtimeConversationItemMessageUser(
-                            type=RealtimeConversationItemType.MESSAGE,
-                            content=[
-                                RealtimeConversationItemMessageUserContent(
-                                    type="input_text",
-                                    text=text,
-                                )
-                            ],
-                        )
-                    )
-                    connection.response.create()
-
-                for _ in range(6):
-                    pending_tool_outputs = []
-                    while True:
-                        event = connection.recv(timeout=60)
-                        if isinstance(
-                            event,
-                            RealtimeServerEventConversationItemInputAudioTranscriptionCompleted,
-                        ):
-                            input_transcript = event.transcript.strip()
-                        elif isinstance(event, RealtimeServerEventResponseAudioDelta):
-                            audio_chunks.append(event.delta)
-                        elif isinstance(event, RealtimeServerEventResponseAudioTranscriptDone):
-                            reply = event.transcript.strip()
-                        elif isinstance(event, RealtimeServerEventResponseTextDone):
-                            reply = event.text.strip()
-                        elif isinstance(event, RealtimeServerEventResponseFunctionCallArgumentsDone):
-                            try:
-                                arguments = json.loads(event.arguments)
-                                result = _execute_agent_tool(
-                                    agent_name,
-                                    event.name,
-                                    arguments,
-                                    proposals,
-                                )
-                            except json.JSONDecodeError as exc:
-                                result = {"error": f"Arguments d'outil invalides : {exc}"}
-                            pending_tool_outputs.append((event.call_id, result))
-                        elif isinstance(event, RealtimeServerEventError):
-                            raise HTTPException(
-                                status_code=502,
-                                detail=f"Erreur de session vocale Foundry : {event.error.message}",
-                            )
-                        elif isinstance(event, RealtimeServerEventResponseDone):
-                            if event.response.status != "completed":
-                                raise HTTPException(
-                                    status_code=502,
-                                    detail=f"La réponse vocale Foundry s'est terminée avec le statut {event.response.status}.",
-                                )
-                            if pending_tool_outputs:
-                                for call_id, result in pending_tool_outputs:
-                                    connection.conversation.item.create(
-                                        item=RealtimeConversationItemFunctionCallOutput(
-                                            call_id=call_id,
-                                            output=json.dumps(result, ensure_ascii=False, default=str),
-                                        )
-                                    )
-                                connection.response.create()
-                                break
-                            return {
-                                "reply": _plain_agent_reply(reply),
-                                "input_transcript": input_transcript,
-                                "audio_pcm": b"".join(audio_chunks),
-                                "proposals": proposals,
-                            }
-                raise HTTPException(
-                    status_code=502,
-                    detail="L'agent vocal a dépassé le nombre maximal d'appels d'outils.",
-                )
-    except HTTPException:
-        raise
-    except (ClientAuthenticationError, CredentialUnavailableError) as exc:
-        logger.exception("Azure authentication failed while calling voice agent %s", agent_name)
-        raise HTTPException(
-            status_code=503,
-            detail="Authentification Azure indisponible. Vérifiez votre accès au projet Foundry.",
-        ) from exc
-    except APIStatusError as exc:
-        logger.exception("Foundry returned an API error for voice agent %s", agent_name)
-        raise HTTPException(status_code=502, detail=_foundry_error_detail(exc)) from exc
-    except Exception as exc:
-        logger.exception("Foundry voice session failed for %s", agent_name)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Échec de la session vocale Foundry ({type(exc).__name__}). Consultez le terminal Uvicorn.",
-        ) from exc
-
-
-def _voice_audio_wav(audio_pcm: bytes) -> str:
-    output = BytesIO()
-    with wave.open(output, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(VOICE_SAMPLE_RATE)
-        wav_file.writeframes(audio_pcm)
-    return base64.b64encode(output.getvalue()).decode("ascii")
-
-
-def _decode_voice_wav(content: bytes) -> bytes:
-    try:
-        with wave.open(BytesIO(content), "rb") as wav_file:
-            if (
-                wav_file.getnchannels() != 1
-                or wav_file.getsampwidth() != 2
-                or wav_file.getframerate() != VOICE_SAMPLE_RATE
-                or wav_file.getcomptype() != "NONE"
-            ):
-                raise ValueError("L'audio doit être un WAV PCM mono 16 bits à 24 kHz.")
-            if wav_file.getnframes() > VOICE_SAMPLE_RATE * MAX_VOICE_DURATION_SECONDS:
-                raise ValueError("Le message vocal ne peut pas dépasser 60 secondes.")
-            audio_pcm = wav_file.readframes(wav_file.getnframes())
-    except (wave.Error, EOFError) as exc:
-        raise ValueError("Le fichier vocal WAV est invalide ou illisible.") from exc
-    if not audio_pcm:
-        raise ValueError("Le message vocal est vide.")
-    return audio_pcm
 
 
 def _foundry_reply(
@@ -1389,23 +1199,16 @@ def _foundry_reply(
         ):
             from azure.ai.projects.models import VoiceAgentDefinition
 
-            current_definition = project.agents.get(
-                agent_name=agent_name
-            ).versions.latest.definition
+            current_definition = project.agents.get(agent_name=agent_name).versions.latest.definition
             if isinstance(current_definition, VoiceAgentDefinition):
-                voice_result = _voice_agent_turn(agent_name, text=prompt)
-                return {
-                    "reply": voice_result["reply"],
-                    "proposals": voice_result["proposals"],
-                    "sharepoint_sources": sources,
-                    "sharepoint_configured": settings.sharepoint_enabled,
-                    "web_sources": [],
-                    "audio_reply": (
-                        _voice_audio_wav(voice_result["audio_pcm"])
-                        if voice_result["audio_pcm"]
-                        else None
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"L'agent Foundry {agent_name} est configuré en mode Voice. "
+                        "Le chat vocal est désactivé; configurez un agent de type Prompt "
+                        "pour utiliser le chat texte."
                     ),
-                }
+                )
             with project.get_openai_client() as client:
                 conversation = client.conversations.create()
                 web_sources = []
@@ -1599,7 +1402,7 @@ def _coordinator_prompt(message: str) -> tuple[str, list[dict]]:
 
 @app.post("/api/chat", dependencies=[Depends(require_auth)])
 def coordinator_chat(payload: ChatInput) -> dict:
-    agent_name = settings.foundry_voice_agent_name
+    agent_name = settings.foundry_agent_names[3]
     prompt, reports = _coordinator_prompt(payload.message)
     return {
         "agent": agent_name,
@@ -1610,38 +1413,6 @@ def coordinator_chat(payload: ChatInput) -> dict:
         ),
         "agent_reports": reports,
     }
-
-
-@app.post("/api/chat/voice", dependencies=[Depends(require_auth)])
-def coordinator_voice_chat(file: UploadFile = File(...)) -> dict:
-    content = file.file.read(MAX_VOICE_UPLOAD_BYTES + 1)
-    if len(content) > MAX_VOICE_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Le message vocal dépasse la taille maximale de 5 Mio.")
-    try:
-        audio_pcm = _decode_voice_wav(content)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    voice_result = _voice_agent_turn(
-        settings.foundry_voice_agent_name,
-        audio_pcm=audio_pcm,
-    )
-    return {
-        "agent": settings.foundry_voice_agent_name,
-        "reply": voice_result["reply"],
-        "input_transcript": voice_result["input_transcript"],
-        "audio_reply": (
-            _voice_audio_wav(voice_result["audio_pcm"])
-            if voice_result["audio_pcm"]
-            else None
-        ),
-        "proposals": voice_result["proposals"],
-        "sharepoint_sources": [],
-        "sharepoint_configured": settings.sharepoint_enabled,
-        "web_sources": [],
-        "agent_reports": [],
-    }
-
-
 @app.post("/api/agents/{agent_name}/chat", dependencies=[Depends(require_auth)])
 def chat(agent_name: str, payload: ChatInput) -> dict:
     if agent_name not in settings.agent_roles:

@@ -38,12 +38,6 @@ Configurez dans Foundry les sources de connaissances propres à chaque agent et 
 
 GestionAgent dispose également de l'outil `send_inventory_report_email`. Il envoie un état actualisé du stock (références, quantités, seuils et alertes) uniquement lorsque l'utilisateur demande explicitement cet envoi. Les destinataires ne sont pas fournis par le modèle : ils sont définis par `SMTP_RECIPIENTS` côté serveur, avec plusieurs adresses séparées par des virgules ou des points-virgules. Configurez aussi `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` et, si nécessaire, `SMTP_USER` / `SMTP_PASSWORD`. Après avoir déployé le code, exécutez `python scripts/create_agent.py --agent "GestionAgent" --update` pour ajouter cet outil à la version Foundry existante.
 
-### Mode vocal de GestionAgent
-
-Le chat accepte aussi un message vocal enregistré (60 secondes maximum). Le navigateur le convertit en WAV PCM mono 16 bits à 24 kHz, puis le backend le transmet à une session temps réel de l'agent vocal Foundry. La transcription, la réponse parlée et les appels d'outils restent traités côté serveur; aucune clé Azure n'est exposée au navigateur. Le navigateur doit autoriser le microphone et être servi en HTTPS (ou depuis localhost).
-
-Dans Foundry, GestionAgent doit avoir été créé avec le mode d'interaction **Voice** et publié sous le nom configuré dans `FOUNDRY_VOICE_AGENT_NAME` (par défaut le quatrième nom de `FOUNDRY_AGENT_NAMES`, soit `GestionAgent`). Le mode Voice est un type d'agent distinct : il ne peut pas être obtenu en mettant à jour une version texte. Configurez l'entrée audio en PCM 24 kHz mono et une sortie audio. Après le déploiement du code, `python scripts/create_agent.py --agent "GestionAgent" --update` conserve la définition audio existante et y ajoute les outils applicatifs. L'installation Python inclut l'extra `azure-ai-projects[voice]`.
-
 ### Bibliothèque SharePoint (facultatif)
 
 L'API peut lire une liste explicite de documents depuis une bibliothèque SharePoint Microsoft 365 et joindre leur contenu à la demande envoyée à l'agent lorsque la question porte sur SharePoint, un document ou une procédure. Les questions opérationnelles ordinaires sont traitées à partir de SQLite et ne dépendent pas de SharePoint. Elle n'explore pas toute la bibliothèque et ne modifie aucun fichier SharePoint. Dans `.env`, configurez :
